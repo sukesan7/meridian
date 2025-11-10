@@ -1,0 +1,25 @@
+instrument: "NQ"
+tz: "America/New_York"
+
+entry_window: { start: "09:35", end: "11:00" }
+time_stop: { mode: "15min", conditional_30m: true }
+risk_cap_or_mult: 1.25
+
+slippage:
+    {
+        normal_ticks: 1,
+        hot_ticks: 2,
+        hot_minutes: ["09:30-09:40", "10:00-10:02"],
+    }
+
+filters:
+    {
+        skip_tiny_or: true,
+        tiny_or_mult: 0.25,
+        low_atr_percentile: 0.2,
+        news_blackout: false,
+    }
+zones: { allow_plus2sigma_disqualify: true }
+trend: { require_vwap_side: true, swing_lookback_5m: 2 }
+management:
+    { tp1_R: 1.0, tp2_R: 2.0, scale_at_tp1: 0.5, move_to_BE_on_tp1: true }
