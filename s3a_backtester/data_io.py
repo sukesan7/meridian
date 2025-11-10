@@ -3,38 +3,48 @@ import pandas as pd
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
-    """
-    Load 1-minute OHLCV from CSV or Parquet.
-    - Accepts a 'timestamp' column or first column as datetime.
-    - Returns tz-aware DatetimeIndex localized to ET.
-    """
-    if path.lower().endswith(".parquet"):
-        df = pd.read_parquet(path)
-    else:
-        df = pd.read_csv(path)
+    """Load 1-min OHLCV, parse UTC timestamps, return tz-aware ET index."""
+    df = (
+        pd.read_parquet(path)
+        if path.lower().endswith(".parquet")
+        else pd.read_csv(path)
+    )
 
-    if "timestamp" in df.columns:
-        idx = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-        df = df.drop(columns=["timestamp"])
-    else:
-        # assume first column is timestamp-like if not explicitly named
-        idx = pd.to_datetime(df.iloc[:, 0], utc=True, errors="coerce")
+    # find timestamp column
+    ts = None
+    for cand in ("timestamp", "datetime", "time", "date"):
+        if cand in df.columns:
+            ts = pd.to_datetime(df[cand], utc=True, errors="coerce")
+            df = df.drop(columns=[cand])
+            break
+    if ts is None:
+        ts = pd.to_datetime(df.iloc[:, 0], utc=True, errors="coerce")
         df = df.iloc[:, 1:]
 
-    df.index = idx.tz_convert(tz)
+    if ts.isna().any():
+        bad = int(ts.isna().sum())
+        raise ValueError(f"{bad} rows have invalid timestamps; check file schema.")
+
+    # convert on a DatetimeIndex (not a Series)
+    idx = pd.DatetimeIndex(ts).tz_convert(tz)
+    df.index = idx
+
+    # enforce schema
+    expected = ["open", "high", "low", "close", "volume"]
+    missing = [c for c in expected if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
     return df.sort_index()
 
 
 def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep US RTH 09:30–16:00 ET (inclusive on close)."""
-    return df.between_time("09:30", "16:00", include_end=True)
+    """Keep US RTH 09:30–16:00 ET (inclusive on both ends)."""
+    return df.between_time("09:30", "16:00", inclusive="both")
 
 
-def resample(df1: pd.DataFrame, rule: str = "5T") -> pd.DataFrame:
-    """
-    Resample to higher TF using label='right', closed='right' to avoid peeking.
-    Returns completed bars only.
-    """
+def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
+    """Resample to higher TF without peeking (label/closed = right)."""
     agg = {
         "open": "first",
         "high": "max",
