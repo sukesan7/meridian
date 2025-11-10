@@ -1,20 +1,14 @@
-@'
-# Default to LF everywhere
+# Normalize to LF in repo
 * text=auto eol=lf
 
-# Windows scripts keep CRLF
+# Keep Windows scripts CRLF locally
 *.ps1 eol=crlf
 *.bat eol=crlf
 
-# Binary-ish stuff - dont touch line endings
+# Treat binaries as binary (no line-ending munging)
 *.parquet -text
 *.png -text
 *.jpg -text
-'@ | Out-File -Encoding ascii .gitattributes
-
-git add .gitattributes
-git commit -m "chore: add .gitattributes for consistent line endings"
-
-# Renormalize existing tracked files to stop the LF→CRLF warnings
-git add --renormalize .
-git commit -m "chore: renormalize line endings per .gitattributes"
+*.gif -text
+*.zip -text
+*.ico -text
