@@ -14,15 +14,16 @@ def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
     out["pdl"] = np.nan
     out["onh"] = np.nan
     out["onl"] = np.nan
-    # Fill OR per day (simple first version)
-    for day, daydf in df1.groupby(df1.index.date, sort=False):
-        slice_ = daydf.between_time("09:30", "09:35", include_end=False)
+
+    # OR = [09:30, 09:35)  (include start, exclude end)
+    for _, daydf in df1.groupby(df1.index.date, sort=False):
+        slice_ = daydf.between_time("09:30", "09:35", inclusive="left")
         if not slice_.empty:
-            out.loc[slice_.index, "or_high"] = slice_["high"].max()
-            out.loc[slice_.index, "or_low"] = slice_["low"].min()
-            out.loc[slice_.index, "or_height"] = (
-                out.loc[slice_.index, "or_high"] - out.loc[slice_.index, "or_low"]
-            )
+            hi = slice_["high"].max()
+            lo = slice_["low"].min()
+            out.loc[slice_.index, "or_high"] = hi
+            out.loc[slice_.index, "or_low"] = lo
+            out.loc[slice_.index, "or_height"] = hi - lo
     return out
 
 
