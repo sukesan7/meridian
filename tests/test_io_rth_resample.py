@@ -1,5 +1,5 @@
 from s3a_backtester.data_io import load_minute_df, slice_rth, resample
-from conftest import make_minute_ohlcv
+from tests.utils import make_minute_ohlcv
 
 
 def test_io_rth_resample_smoke(tmp_path):
