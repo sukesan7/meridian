@@ -1,16 +1,18 @@
 from __future__ import annotations
 import pandas as pd
 
+REQ_COLS = ("open", "high", "low", "close", "volume")
+
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
-    """Load 1-min OHLCV, parse UTC timestamps, return tz-aware ET index."""
+    """Load 1-min OHLCV; parse UTC ts; return tz-aware ET index with strict schema."""
     df = (
         pd.read_parquet(path)
         if path.lower().endswith(".parquet")
         else pd.read_csv(path)
     )
 
-    # find timestamp column
+    # detect timestamp column
     ts = None
     for cand in ("timestamp", "datetime", "time", "date"):
         if cand in df.columns:
@@ -20,31 +22,33 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
     if ts is None:
         ts = pd.to_datetime(df.iloc[:, 0], utc=True, errors="coerce")
         df = df.iloc[:, 1:]
-
     if ts.isna().any():
-        bad = int(ts.isna().sum())
-        raise ValueError(f"{bad} rows have invalid timestamps; check file schema.")
+        raise ValueError(f"Invalid timestamps: {int(ts.isna().sum())} rows")
 
-    # convert on a DatetimeIndex (not a Series)
+    # tz-convert on a DatetimeIndex
     idx = pd.DatetimeIndex(ts).tz_convert(tz)
     df.index = idx
 
-    # enforce schema
-    expected = ["open", "high", "low", "close", "volume"]
-    missing = [c for c in expected if c not in df.columns]
+    # strict schema
+    missing = [c for c in REQ_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
-    return df.sort_index()
+    # basic sanity
+    df = df.sort_index()
+    if not df.index.is_monotonic_increasing:
+        raise ValueError("Index not sorted ascending")
+
+    return df
 
 
 def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep US RTH 09:30–16:00 ET (inclusive on both ends)."""
+    """Keep US RTH 09:30–16:00 ET (inclusive)."""
     return df.between_time("09:30", "16:00", inclusive="both")
 
 
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
-    """Resample to higher TF without peeking (label/closed = right)."""
+    """Right-label/right-closed resample (no peeking)."""
     agg = {
         "open": "first",
         "high": "max",

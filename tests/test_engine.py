@@ -17,7 +17,7 @@ def test_engine_stubs_run():
         index=idx,
     )
     df5 = (
-        df1.resample("5T", label="right", closed="right")
+        df1.resample("5min", label="right", closed="right")
         .agg(
             {
                 "open": "first",

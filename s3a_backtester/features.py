@@ -1,43 +1,52 @@
-# s3a_backtester/features.py
 from __future__ import annotations
 import pandas as pd
 import numpy as np
 
 
 def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
-    """Compute OR(09:30–09:35) and placeholders for PDH/PDL/ONH/ONL."""
-    out = df1.copy()
+    """
+    OR (09:30–09:35 left-inclusive), plus PDH/PDL carry-forward from prior RTH session.
+    """
+    out = pd.DataFrame(index=df1.index)
     out["or_high"] = np.nan
     out["or_low"] = np.nan
     out["or_height"] = np.nan
-    out["pdh"] = np.nan
-    out["pdl"] = np.nan
+
+    # OR per calendar day
+    for _, daydf in df1.groupby(df1.index.date, sort=False):
+        or_slice = daydf.between_time("09:30", "09:35", inclusive="left")
+        if not or_slice.empty:
+            hi, lo = or_slice["high"].max(), or_slice["low"].min()
+            out.loc[or_slice.index, "or_high"] = hi
+            out.loc[or_slice.index, "or_low"] = lo
+            out.loc[or_slice.index, "or_height"] = hi - lo
+
+    # PDH/PDL from prior RTH session
+    rth = df1.between_time("09:30", "16:00", inclusive="both")
+    sess_hi = rth["high"].groupby(rth.index.date).max()
+    sess_lo = rth["low"].groupby(rth.index.date).min()
+    pdh_map = sess_hi.shift(1)  # prior session’s high
+    pdl_map = sess_lo.shift(1)  # prior session’s low
+
+    # broadcast back to minutes
+    dates = pd.Series(df1.index.date, index=df1.index)
+    out["pdh"] = dates.map(pdh_map).astype(float)
+    out["pdl"] = dates.map(pdl_map).astype(float)
+
+    # placeholders for ONH/ONL if you want later
     out["onh"] = np.nan
     out["onl"] = np.nan
-
-    # OR = [09:30, 09:35)  (include start, exclude end)
-    for _, daydf in df1.groupby(df1.index.date, sort=False):
-        slice_ = daydf.between_time("09:30", "09:35", inclusive="left")
-        if not slice_.empty:
-            hi = slice_["high"].max()
-            lo = slice_["low"].min()
-            out.loc[slice_.index, "or_high"] = hi
-            out.loc[slice_.index, "or_low"] = lo
-            out.loc[slice_.index, "or_height"] = hi - lo
     return out
 
 
 def compute_session_vwap_bands(
     df1: pd.DataFrame, use_close: bool = True
 ) -> pd.DataFrame:
-    """Session-anchored VWAP from 09:30 and simple expanding stdev bands (±1σ/±2σ)."""
-    price = df1["close"] if use_close else (df1["high"] + df1["low"] + df1["close"]) / 3
-    vol = (
-        df1["volume"].astype(float)
-        if "volume" in df1.columns
-        else pd.Series(1.0, index=df1.index)
+    price = (
+        df1["close"] if use_close else (df1["high"] + df1["low"] + df1["close"]) / 3.0
     )
-    out_parts = []
+    vol = df1.get("volume", pd.Series(1.0, index=df1.index)).astype(float)
+    parts = []
     for _, day in df1.groupby(df1.index.date, sort=False):
         day = day[day.index.time >= pd.Timestamp("09:30").time()]
         if day.empty:
@@ -53,18 +62,14 @@ def compute_session_vwap_bands(
         tmp["band_m1"] = vwap - sd
         tmp["band_p2"] = vwap + 2 * sd
         tmp["band_m2"] = vwap - 2 * sd
-        out_parts.append(tmp)
-    out = pd.concat(out_parts) if out_parts else pd.DataFrame(index=df1.index)
+        parts.append(tmp)
+    out = pd.concat(parts) if parts else pd.DataFrame(index=df1.index)
     return out.reindex(df1.index)
 
 
 def compute_atr15(df1: pd.DataFrame) -> pd.Series:
-    """Simple EMA-based ATR proxy on 1m bars."""
-    hi, lo, cl = df1.get("high"), df1.get("low"), df1.get("close")
-    if hi is None or lo is None or cl is None:
-        return pd.Series(index=df1.index, dtype=float, name="atr15")
+    hi, lo, cl = df1["high"], df1["low"], df1["close"]
     tr = pd.concat(
         [(hi - lo).abs(), (hi - cl.shift()).abs(), (lo - cl.shift()).abs()], axis=1
     ).max(axis=1)
-    atr = tr.ewm(span=15, adjust=False).mean()
-    return atr.rename("atr15")
+    return tr.ewm(span=15, adjust=False).mean().rename("atr15")
