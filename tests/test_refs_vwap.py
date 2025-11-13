@@ -1,6 +1,6 @@
 from s3a_backtester.data_io import load_minute_df
 from s3a_backtester.features import compute_session_refs, compute_session_vwap_bands
-from .conftest import make_minute_ohlcv
+from conftest import make_minute_ohlcv
 
 
 def test_refs_and_vwap(tmp_path):
