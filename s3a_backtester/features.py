@@ -5,7 +5,7 @@ import numpy as np
 
 def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
     """
-    OR (09:30–09:35 left-inclusive), plus PDH/PDL carry-forward from prior RTH session.
+    OR (09:30-09:35 left-inclusive), plus PDH/PDL carry-forward from prior RTH session.
     """
     out = pd.DataFrame(index=df1.index)
     out["or_high"] = np.nan

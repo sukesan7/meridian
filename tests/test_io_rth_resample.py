@@ -69,3 +69,55 @@ def test_resample_30min_alignment_no_peek():
 
     # Sanity: highs are non-decreasing with our synthetic monotonic data
     assert df30["high"].is_monotonic_increasing
+
+
+def test_slice_rth_consistent_across_dst(tmp_path):
+    """
+    RTH slice (09:30–16:00 ET) should give 391 bars both before and after
+    a DST transition when timestamps come in as UTC and are converted to ET.
+    """
+    # Build a 1-min ET index spanning a DST change weekend (US/Eastern).
+    # DST in 2024 starts Sunday 2024-03-10, so:
+    # - 2024-03-08 is a Friday (Standard Time)
+    # - 2024-03-11 is a Monday (Daylight Time)
+    idx_et = pd.date_range(
+        "2024-03-08 00:00",
+        "2024-03-12 23:59",
+        freq="1min",
+        tz="America/New_York",
+    )
+
+    # Simple constant OHLCV; we only care about the index.
+    df_et = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1.0,
+        },
+        index=idx_et,
+    )
+
+    # Emulate real feed: store timestamps as UTC in a 'datetime' column.
+    csv_df = df_et.copy()
+    csv_df.insert(0, "datetime", csv_df.index.tz_convert("UTC"))
+
+    path = tmp_path / "dst_test.csv"
+    csv_df.to_csv(path, index=False)
+
+    # Load via our real loader (UTC -> ET) and slice RTH via our real function.
+    df = load_minute_df(str(path), tz="America/New_York")
+    assert str(df.index.tz) == "America/New_York"
+
+    for day_str in ("2024-03-08", "2024-03-11"):
+        daydf = df.loc[day_str]
+        rth = slice_rth(daydf)
+
+        # Full RTH 09:30–16:00 inclusive = 391 bars.
+        assert len(rth) == 391, f"Unexpected RTH length for {day_str}"
+
+        first = rth.index[0]
+        last = rth.index[-1]
+        assert (first.hour, first.minute) == (9, 30)
+        assert (last.hour, last.minute) == (16, 0)
