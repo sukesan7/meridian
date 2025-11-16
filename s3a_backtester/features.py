@@ -67,9 +67,38 @@ def compute_session_vwap_bands(
     return out.reindex(df1.index)
 
 
-def compute_atr15(df1: pd.DataFrame) -> pd.Series:
-    hi, lo, cl = df1["high"], df1["low"], df1["close"]
-    tr = pd.concat(
-        [(hi - lo).abs(), (hi - cl.shift()).abs(), (lo - cl.shift()).abs()], axis=1
-    ).max(axis=1)
-    return tr.ewm(span=15, adjust=False).mean().rename("atr15")
+def compute_atr15(df1: pd.DataFrame, window: int = 15) -> pd.Series:
+    """Compute a 15-bar ATR-style volatility from 1-minute OHLC.
+
+    True range per bar is max of:
+      * high - low
+      * abs(high - prev_close)
+      * abs(low - prev_close)
+
+    Then we take a simple rolling mean over `window` bars.
+    Result is aligned to df1.index and named 'atr15'.
+    """
+    required = {"high", "low", "close"}
+    missing = required - set(df1.columns)
+    if missing:
+        raise KeyError(f"Missing columns for ATR calc: {missing}")
+
+    high = df1["high"].astype("float64")
+    low = df1["low"].astype("float64")
+    close = df1["close"].astype("float64")
+
+    prev_close = close.shift(1)
+
+    tr_components = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    )
+    tr = tr_components.max(axis=1)
+
+    atr = tr.rolling(window=window, min_periods=1).mean()
+    atr.name = "atr15"
+    return atr
