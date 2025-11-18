@@ -165,6 +165,14 @@ data/QQQ_1min_2025-04_to_2025-10.csv
 
 Final production runs will use continuous, back-adjusted NQ/ES 1-minute data from a vendor such as Kibot, Barchart, or IQFeed; this is documented but not yet wired.
 
+### Vendor futures data (NQ, ES)
+
+For production-like tests we use CME futures data from Databento
+(NQ / ES 1-minute OHLCV). Raw CSVs are not committed; they live in
+`data/raw/databento/`, and we normalize them via
+`scripts/convert_databento_to_parquet.py` into
+`data/vendor_parquet/NQ` and `data/vendor_parquet/ES`.
+
 ---
 # Quickstart
 

@@ -66,7 +66,15 @@ A synthetic monotonic test confirms that 30-minute highs and closes line up with
   - Vendor is expected to provide the continuous contract (front-month roll + back-adjust).
   - The backtester assumes the feed already handles contract stitching; this project focuses on session logic and trade simulation.
 
-## 6. Limitations / TODO
+## 6. Vendor Futures Data (Databento)
+
+**Source:** Databento CME Globex MDP 3.0 OHLCV-1m, CSV, zstd.
+**Products:** NQ, ES continuous futures.
+**Timezone:** timestamps in UTC, converted to America/New_York in the pipeline.
+**Schema:** In the actual parquet, you will see: `timestamp` (index), `symbol`, `open/high/low/close/volume`.
+**Note:** Raw files live under data/raw/databento/... (ignored) and normalized parquet under data/vendor_parquet/NQ|ES.
+
+## 7. Limitations / TODO
 
 - Holidays and half-days are not yet inlcuded in the model.
 - No special handling for missing RTH bars or zero-volume bars. They are currently treated as gaps. Possible correction in the future for this.
