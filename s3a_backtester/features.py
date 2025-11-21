@@ -102,3 +102,79 @@ def compute_atr15(df1: pd.DataFrame, window: int = 15) -> pd.Series:
     atr = tr.rolling(window=window, min_periods=1).mean()
     atr.name = "atr15"
     return atr
+
+
+def find_swings_1m(
+    df1: pd.DataFrame,
+    lb: int = 2,
+    rb: int = 2,
+    high_col: str = "high",
+    low_col: str = "low",
+) -> pd.DataFrame:
+    """
+    Mark micro swing highs/lows on 1-minute bars.
+
+    A bar i is a swing high if its high is strictly greater than the highs of the
+    previous `lb` bars and greater than or equal to the highs of the next `rb` bars
+    within the *same calendar day*.
+
+    A bar i is a swing low if its low is strictly lower than the lows of the
+    previous `lb` bars and lower than or equal to the lows of the next `rb` bars
+    within the same day.
+
+    This is a purely offline / structural feature: it uses both left and right
+    context, so you only use swing markers after the fact (never for real-time
+    entry decisions).
+
+    Parameters
+    ----------
+    df1 : DataFrame
+        1-minute OHLCV data indexed by tz-aware timestamps.
+    lb, rb : int
+        Number of bars to the left / right to define a swing.
+    high_col, low_col : str
+        Column names for high and low prices.
+
+    Returns
+    -------
+    DataFrame
+        Copy of df1 with boolean columns:
+        - 'swing_high_1m'
+        - 'swing_low_1m'
+    """
+    if lb < 1 or rb < 1:
+        raise ValueError("lb and rb must be >= 1")
+
+    df = df1.copy()
+    df["swing_high_1m"] = False
+    df["swing_low_1m"] = False
+
+    # Group by calendar day in the index's timezone
+    for _, day_df in df.groupby(df.index.normalize()):
+        n = len(day_df)
+        if n == 0:
+            continue
+
+        highs = day_df[high_col].to_numpy()
+        lows = day_df[low_col].to_numpy()
+
+        swing_high = np.zeros(n, dtype=bool)
+        swing_low = np.zeros(n, dtype=bool)
+
+        # No swings possible in the first lb or last rb bars of the day
+        for i in range(lb, n - rb):
+            hi = highs[i]
+            lo = lows[i]
+
+            if np.all(hi > highs[i - lb : i]) and np.all(
+                hi >= highs[i + 1 : i + rb + 1]
+            ):
+                swing_high[i] = True
+
+            if np.all(lo < lows[i - lb : i]) and np.all(lo <= lows[i + 1 : i + rb + 1]):
+                swing_low[i] = True
+
+        df.loc[day_df.index, "swing_high_1m"] = swing_high
+        df.loc[day_df.index, "swing_low_1m"] = swing_low
+
+    return df
