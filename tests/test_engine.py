@@ -152,3 +152,136 @@ def test_generate_signals_disqualified_long_if_opposite_2sigma_hit_first():
     assert out.loc[unlock_ts, "or_break_unlock"]
     # …but flagged as disqualified by pre-existing 2σ breach
     assert out.loc[unlock_ts, "disqualified_2sigma"]
+
+
+def test_generate_signals_zone_requires_unlock():
+    """No unlock => no zone, even if price sits in the VWAP±1σ band."""
+    idx = _make_simple_day_index()
+
+    # Always trade inside OR, never break ORH/ORL
+    close = [105.0] * len(idx)  # inside [vwap_1d, vwap_1u]
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 90.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": 1,  # uptrend
+        },
+        index=idx,
+    )
+
+    out = generate_signals(df)
+
+    assert not bool(out["or_break_unlock"].any())
+    assert not bool(out["in_zone"].any())
+
+
+def test_generate_signals_only_first_zone_per_day():
+    """After unlock, only the first pullback into the zone is marked."""
+    idx = _make_simple_day_index()
+
+    # 09:30-09:34 inside OR
+    close = [100.0, 101.0, 102.0, 103.0, 104.0]
+
+    # 09:35 unlock (ORH = 110)
+    close.append(111.0)  # idx[5]
+
+    # 09:36 not in zone
+    close.append(112.0)  # idx[6]
+
+    # 09:37 zone candidate #1
+    close.append(108.0)  # idx[7]
+
+    # 09:38 zone candidate #2 – also inside zone band
+    close.append(107.0)  # idx[8]
+
+    # Rest of the day flat
+    close += [107.0] * (len(idx) - len(close))
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 90.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": 1,
+        },
+        index=idx,
+    )
+
+    out = generate_signals(df)
+
+    zone_indices = list(out.index[out["in_zone"]])
+    # Only the first zone (09:37) should be marked
+    assert zone_indices == [idx[7]]
+
+
+def test_generate_signals_zone_blocked_if_disqualified():
+    """
+    If the opposite 2σ band is breached before unlock, we still unlock,
+    but we must never mark a zone for that session.
+    """
+    idx = _make_simple_day_index()
+
+    close = []
+
+    # 09:30 - big breach below vwap_2d (opposite 2σ for a long)
+    close.append(94.0)  # < vwap_2d=95.0
+
+    # Fill so that unlock would otherwise happen at 09:35
+    close += [100.0, 102.0, 103.0, 104.0]  # 09:31-09:34 inside OR
+    close.append(111.0)  # 09:35 unlock (> ORH=110)
+    close.append(112.0)  # 09:36
+    close.append(108.0)  # 09:37 would be in-zone if not disqualified
+
+    close += [108.0] * (len(idx) - len(close))
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 90.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": 1,
+        },
+        index=idx,
+    )
+
+    out = generate_signals(df)
+
+    unlock_ts = idx[5]  # 09:35
+
+    # Unlock still happens…
+    assert out.loc[unlock_ts, "or_break_unlock"]
+
+    # …but 2σ disqualifier is active for the session
+    assert bool(out["disqualified_2sigma"].any())
+
+    # Therefore no zone should be marked
+    assert not bool(out["in_zone"].any())
