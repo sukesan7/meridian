@@ -1,4 +1,4 @@
-### Week 1 - Data Foundation & Determinstic Scallfolding
+## Week 1 - Data Foundation & Determinstic Scallfolding
 
 ✅ Implemented
 
