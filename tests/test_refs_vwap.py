@@ -1,3 +1,4 @@
+# Tests for the references and VWAP
 from s3a_backtester.data_io import load_minute_df
 from s3a_backtester.features import compute_session_refs, compute_session_vwap_bands
 from tests.utils import make_minute_ohlcv

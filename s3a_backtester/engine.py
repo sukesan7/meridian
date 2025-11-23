@@ -1,10 +1,10 @@
-# s3a_backtester/engine.py
+# 3A Engine
+# Strategy 3A Brain + State Machine
 from __future__ import annotations
 import pandas as pd
 from typing import Any
 from .config import Config
 
-# Column contracts we’ll fill out later
 _SIGNAL_COLS = [
     "time_window_ok",
     "or_break_unlock",
@@ -37,6 +37,7 @@ _TRADE_COLS = [
 ]
 
 
+# Future place for actual trades, currently a stub
 def simulate_trades(
     df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config
 ) -> pd.DataFrame:
@@ -47,33 +48,15 @@ def simulate_trades(
     return pd.DataFrame(columns=_TRADE_COLS)
 
 
+# Signal Generation for 3A
 def generate_signals(
     df_1m: pd.DataFrame,
     df_5m: pd.DataFrame | None = None,
     cfg: Any | None = None,
 ) -> pd.DataFrame:
-    """
-    Generate basic 3A engine signals on a 1-minute dataframe.
-
-    Supports both:
-      - generate_signals(df_1m, df_5m, cfg)  # stub test
-      - generate_signals(df_1m)              # unit tests with features
-
-    Full behaviour requires these columns in df_1m:
-      - close
-      - or_high, or_low
-      - vwap, vwap_1u, vwap_1d, vwap_2u, vwap_2d
-      - trend_5m
-
-    If they are missing, we degrade gracefully and just attach the
-    placeholder signal columns so downstream code still works.
-    """
-
     out = df_1m.copy()
 
-    # ------------------------------------------------------------------
-    # 0) Ensure signal columns exist (stub-safe)
-    # ------------------------------------------------------------------
+    # Ensure that the standard signal columns exist
     for col, default in [
         ("time_window_ok", True),
         ("or_break_unlock", False),
@@ -103,9 +86,10 @@ def generate_signals(
     if not required.issubset(out.columns):
         return out
 
-    # ------------------------------------------------------------------
-    # 1) Index → dates + time_window_ok
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Index into dates + time_window_ok (acceptable condition for 3A)
+    # Convert index to ET, pulling dates and clock times
+    # ---------------------------------------------------------------
     idx = out.index
     if getattr(idx, "tz", None) is not None:
         idx_et = idx.tz_convert("America/New_York")
@@ -118,7 +102,7 @@ def generate_signals(
     ew = getattr(cfg, "entry_window", None) if cfg is not None else None
 
     if ew is None:
-        # No explicit entry window (unit tests) → all bars OK
+        # No explicit entry window (unit tests), then all bars are allowed
         time_window = pd.Series(True, index=out.index)
     else:
         start_str = getattr(ew, "start", "09:35")
@@ -130,9 +114,9 @@ def generate_signals(
 
     out["time_window_ok"] = time_window
 
-    # ------------------------------------------------------------------
-    # 2) Direction & unlock logic
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Direction & Unlock Logic
+    # ---------------------------------------------------------------
     is_long_trend = out["trend_5m"] > 0
     is_short_trend = out["trend_5m"] < 0
 
@@ -145,33 +129,40 @@ def generate_signals(
     above_vwap = out["close"] >= out["vwap"]
     below_vwap = out["close"] <= out["vwap"]
 
+    # inside window, 5-min trend upward, 1 min close > OR_high, and close >= VWAP (correct side)
     unlock_long = time_window & is_long_trend & breaks_or_long & above_vwap
+
+    # inside window, 5-min trend downward, 1 min close < OR_low, and close <= VWAP (correct side)
     unlock_short = time_window & is_short_trend & breaks_or_short & below_vwap
+
+    # combined
     unlock_raw = unlock_long | unlock_short
 
-    # First unlock per session
+    # First unlock per session is real unlock
     unlock_order = unlock_raw.groupby(dates).cumsum()
     unlock_first = unlock_order.eq(1)
     out["or_break_unlock"] = unlock_first
 
-    # ------------------------------------------------------------------
-    # 3) Opposite 2σ disqualifier (cumulative per day)
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Opposite 2 sigma disqualifier (cumulative per day)
+    # ---------------------------------------------------------------
     hit_opp_long = is_long_trend & (out["close"] <= out["vwap_2d"])
     hit_opp_short = is_short_trend & (out["close"] >= out["vwap_2u"])
     hit_opp = hit_opp_long | hit_opp_short
 
     disq = hit_opp.groupby(dates).cumsum().astype(bool)
+
+    # Accept both σ and `sigma` labels
     out["disqualified_2sigma"] = disq
     out["disqualified_±2σ"] = disq
 
-    # ------------------------------------------------------------------
-    # 4) Zone logic – first pullback into VWAP / ±1σ after unlock
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # Zone logic – first pullback into VWAP / +- 1 sigma after unlock
+    # ---------------------------------------------------------------
     out["in_zone"] = False
 
     for date_val, grp in out.groupby(dates):
-        # If no unlock at all, skip this session
+        # If there is no unlock, skip the session
         unlock_bars = grp.index[grp["or_break_unlock"]]
         if len(unlock_bars) == 0:
             continue
@@ -180,13 +171,13 @@ def generate_signals(
         unlock_ts = unlock_bars[0]
         dir_val = grp.loc[unlock_ts, "direction"]
 
-        # Only look *after* the unlock bar
+        # Only look after the unlock bar
         after = grp.loc[grp.index > unlock_ts]
         if after.empty:
             continue
 
         if dir_val == 1:
-            # Long: pullback down into [VWAP, +1σ]
+            # Long: pullback down into [VWAP, +1 sigma]
             zone_mask = (
                 (after["close"] >= after["vwap"])
                 & (after["close"] <= after["vwap_1u"])
@@ -194,7 +185,7 @@ def generate_signals(
                 & (~after["disqualified_2sigma"])
             )
         elif dir_val == -1:
-            # Short: pullback up into [-1σ, VWAP]
+            # Short: pullback up into [-1 sigma, VWAP]
             zone_mask = (
                 (after["close"] <= after["vwap"])
                 & (after["close"] >= after["vwap_1d"])
@@ -207,6 +198,6 @@ def generate_signals(
         candidates = after[zone_mask]
         if not candidates.empty:
             zone_ts = candidates.index[0]  # first zone bar of the day
-            out.loc[zone_ts, "in_zone"] = True
+            out.loc[zone_ts, "in_zone"] = True  # mark exactly one bar
 
     return out

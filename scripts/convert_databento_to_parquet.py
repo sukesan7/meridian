@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# Databento OHLCV-1m CSV to Parquet Converter
 """
 Convert Databento OHLCV-1m CSVs (already .zst-decompressed) into
 normalized Parquet files for the 3A backtester.

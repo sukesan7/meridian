@@ -1,4 +1,6 @@
-# s3a_backtester/cli.py
+# Command Line
+# Purpose of this file is to glue together config loading, data loading, engine calls, and output.
+# Orchestrate: parse -> load -> run -> save.
 from __future__ import annotations
 import argparse
 from .config import load_config

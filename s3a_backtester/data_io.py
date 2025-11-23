@@ -1,18 +1,21 @@
+# Data Input / Output
+# Achieve a clean time-series dataframe
 from __future__ import annotations
 import pandas as pd
 
+# Set required columns
 REQ_COLS = ("open", "high", "low", "close", "volume")
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
-    """Load 1-min OHLCV; parse UTC ts; return tz-aware ET index with strict schema."""
+    # Load 1-minute OHLCV data, parse UTC timestamp, return the timezone aware ET index with strict schema
     df = (
         pd.read_parquet(path)
         if path.lower().endswith(".parquet")
         else pd.read_csv(path)
     )
 
-    # detect timestamp column
+    # Detect the timestamp column
     ts = None
     for cand in ("timestamp", "datetime", "time", "date"):
         if cand in df.columns:
@@ -25,16 +28,16 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
     if ts.isna().any():
         raise ValueError(f"Invalid timestamps: {int(ts.isna().sum())} rows")
 
-    # tz-convert on a DatetimeIndex
+    # Timezone-convert on a DateTimeIndex
     idx = pd.DatetimeIndex(ts).tz_convert(tz)
     df.index = idx
 
-    # strict schema
+    # Strict Schema
     missing = [c for c in REQ_COLS if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
-    # basic sanity
+    # Sanity Check
     df = df.sort_index()
     if not df.index.is_monotonic_increasing:
         raise ValueError("Index not sorted ascending")
@@ -42,11 +45,13 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
     return df
 
 
+# Regular Trading Hours
 def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
     """Keep US RTH 09:30–16:00 ET (inclusive)."""
     return df.between_time("09:30", "16:00", inclusive="both")
 
 
+# Resample the data
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
     """Right-label/right-closed resample (no peeking)."""
     agg = {
