@@ -9,6 +9,7 @@ The goal of this project is to produce a **reproducible research harness** that 
 - What is realistic MaxDD and CAGR under Monte Carlo?
 
 This repo is structured like a small production quant project: clean package, CLI, tests, CI, and documentation.
+
 ---
 
 ## Current Status
@@ -25,6 +26,7 @@ This repo is structured like a small production quant project: clean package, CL
   - Databento NQ/ES futures CSV→Parquet pipeline.
 
 See `docs/week*-notes.md` for full notes.
+
 ---
 
 ## Strategy 3A
@@ -93,6 +95,7 @@ The backtester’s job is to encode these rules exactly and test them over 12–
   .gitignore                    # Ignore virtualenv, data, outputs, build artifacts
   README.md                     # You are here
 ```
+
 ---
 
 # Installation & Setup:
@@ -103,12 +106,12 @@ The backtester’s job is to encode these rules exactly and test them over 12–
 - Git, virtualenv support
 - Pandas / numpty etc. are installed via `pyproject.yaml`.
 
-## 1. Clone the Repo
+### 1. Clone the Repo
 ```bash
 git clone https://github.com/sukesan7/3a-backtester.git
 ```
 
-## 2. Create and Activate a Virtual Environment
+### 2. Create and Activate a Virtual Environment
 
 **Windows (powershell):**
 ```powershell
@@ -122,13 +125,14 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 ```
 
-## 3. Install in editable mode (with dev tools)
+### 3. Install in editable mode (with dev tools)
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -e .[dev]
 ```
 
 This installs the package, CLI script `threea-run`, and dev tooling (pytest, ruff, black, pre-commit).
+
 ---
 
 # Quickstart
@@ -151,6 +155,7 @@ In Week 1, the "backtest" is essentially a pipeline smoke test:
 - print a summary (currently zero trades, stats in R).
 
 Once the engine is implemented (Week 2+), this command will produce a full `trades.csv` and summary under `outputs/`.
+
 ---
 
 # Running Tests & Linting
