@@ -1,6 +1,6 @@
 # 3A Backtester - Data Notes (Week 1)
 
-## Purpose:
+## Objective:
 
 This document defines the 1-minute input data contract for the 3A backtester:
 - Schema.
@@ -9,7 +9,7 @@ This document defines the 1-minute input data contract for the 3A backtester:
 - Resampling Rules.
 - Split between Dev Data (QQQ) and the final production futures data (NQ/ES).
 
-## 1. Input Schema (1-minute bars)
+### 1. Input Schema (1-minute bars)
 
 - **Index**: `DatetimeIndex`, timezone-aware, `America/New_York`.
 - **Frequency**: regular 1-minute bars.
@@ -22,7 +22,7 @@ This document defines the 1-minute input data contract for the 3A backtester:
 
 `load_minute_df` is responsible for reading the raw file and returning a cleaned, tz-aware 1-minute DataFrame in thisshape.
 
-## 2. Timezone & DST Handling
+### 2. Timezone & DST Handling
 
 - All trading logic is expressed in **US Eastern time** (`America/New_York`).
 - Raw vendor feeds may be UTC; the loader converts timestamps to ET.
@@ -30,7 +30,7 @@ This document defines the 1-minute input data contract for the 3A backtester:
 - The RTH slice and all session logic are defined in **clock time**, not fixed UTC offsets.
 - A dedicated test spans the March DST weekend and verifies that the RTH slice still returns 391 bars for a full day both before and after the DST change.
 
-## 3. Session Windows
+### 3. Session Windows
 
 - **Regular Trading Hours (RTH)**:
   - Defined as `09:30:00 <= t <= 16:00:00` in `America/New_York`.
@@ -41,7 +41,7 @@ This document defines the 1-minute input data contract for the 3A backtester:
 - **Entry window**:
   - Strategy entries are only allowed `09:35–11:00` ET (full session is still used for VWAP and exits).
 
-## 4. Resampling (5-minute and 30-minute)
+### 4. Resampling (5-minute and 30-minute)
 
 Resampling is applied to the 1-minute ET series using the same aggregation for both 5-minute and 30-minute bars:
 
@@ -54,7 +54,7 @@ Resampling is applied to the 1-minute ET series using the same aggregation for b
 The implementation uses `label="right"` and `closed="right"` so that a bar timestamp at 10:00 only contains data from `(09:55, 10:00]`. This avoids look-ahead.
 A synthetic monotonic test confirms that 30-minute highs and closes line up with the last minute in each resampled window.
 
-## 5. Dev vs Production data
+### 5. Dev vs Production data
 
 - **Dev data (current)**:
   - 1-minute QQQ equity data (similar behavior to futures data), RTH only.
@@ -66,7 +66,7 @@ A synthetic monotonic test confirms that 30-minute highs and closes line up with
   - Vendor is expected to provide the continuous contract (front-month roll + back-adjust).
   - The backtester assumes the feed already handles contract stitching; this project focuses on session logic and trade simulation.
 
-## 6. Vendor Futures Data (Databento)
+### 6. Vendor Futures Data (Databento)
 
 **Source:** Databento CME Globex MDP 3.0 OHLCV-1m, CSV, zstd.
 **Products:** NQ, ES continuous futures.
@@ -74,14 +74,13 @@ A synthetic monotonic test confirms that 30-minute highs and closes line up with
 **Schema:** In the actual parquet, you will see: `timestamp` (index), `symbol`, `open/high/low/close/volume`.
 **Note:** Raw files live under data/raw/databento/... (ignored) and normalized parquet under data/vendor_parquet/NQ|ES.
 
-## 7. Limitations / TODO
+### 7. Limitations / TODO
 
 - Holidays and half-days are not yet inlcuded in the model.
 - No special handling for missing RTH bars or zero-volume bars. They are currently treated as gaps. Possible correction in the future for this.
 - Overnight session (ONH/ONL) is not yet wired. This will be adjusted in future milestones.
 - Single-instrument per run for now. Possible change in the future.
----
----
+
 ---
 
 # 3A Backtester - Data Notes (Week 2)
@@ -94,9 +93,8 @@ Week 2 moved the project from "QQQ-only dev data" to having a **real futures dat
 - Ensure timestamps, schema, and symbols match the 3A data contract defined in Week 1.
 
 This section documents the futures-specific setup.
----
 
-## 1. Directory layout for vendor futures data
+### 1. Directory layout for vendor futures data
 
 All vendor futures data is kept under `data/` and git-ignored:
 - **Raw vendor files (as delivered / decompressed CSV)**:
@@ -111,9 +109,8 @@ Notes:
 - The backtester wil later load from `vendor_parquet` via `data_io.load_minute_df` or a thin wrapper that globs multiple files.
 
 QQQ dev files remain as simple CSVs directly under `data/` for fast iteration and are seperate from the futures vendor folder.
----
 
-## 2. Databento CSV -> Parquet pipeline
+### 2. Databento CSV -> Parquet pipeline
 
 A small, repeatable pipeline that converts Databento OHLCV-1m CSVs into normalized Parquet:
 - **Source:** Databento CME Globex MDP 3.0, 1-minute OHLCV for:
@@ -133,9 +130,8 @@ A small, repeatable pipeline that converts Databento OHLCV-1m CSVs into normaliz
     - `data/vendor_parquet/ES/`
 
 This keeps the on-disk futures data in the same schema as the 1-minute data contract defined in Week 1.
----
 
-## 3. Schema & Timezone for Normalized Futures Data
+### 3. Schema & Timezone for Normalized Futures Data
 
 The normalized NQ/ES Parquet files follow the same contract as the generic 1-minute loader:
 - **Index:**
@@ -149,7 +145,7 @@ The normalized NQ/ES Parquet files follow the same contract as the generic 1-min
 
 This means **Dev QQQ data and Production NQ/ES data now share the same loader assumptions**.
 
-## 4. Validation performed in Week 2
+### 4. Validation performed in Week 2
 
 To avoid silently bad data, several sanity checks were done during Week 2:
 - **Parquet Shape Checks:**
@@ -167,9 +163,8 @@ To avoid silently bad data, several sanity checks were done during Week 2:
     - `load_minute_df` -> `slice_rth` -> `resample` -> `features` -> `structure` -> `engine`.
 
 For Week 2, the primary engine and feature development still targets QQQ, but the NQ/ES futures data is now in place for final backtests.
----
 
-## 5. Usage Plan (Dev vs Futures)
+### 5. Usage Plan (Dev vs Futures)
 
 - **Dev (current):**
   - QQQ 1-minute CSVs remain the primary dataset for:
@@ -184,9 +179,8 @@ For Week 2, the primary engine and feature development still targets QQQ, but th
     - Drive walk-forward splits and Monte Carlo on the future series.
 
 This is the current Usage plan as of Week 2.
----
 
-## 6. Limitations / TODO (Week 2 scope)
+### 6. Limitations / TODO (Week 2 scope)
 
 - Loader still assumes one file at a time. A higher-level helper to:
   - Glob multiple Parquets,
