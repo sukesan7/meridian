@@ -23,6 +23,8 @@
   - GitHub Actions matrix (Python 3.10/3.11) running pre-commit (ruff/black) + pytest on every push/PR.
   - Protected `main`: changes go through feature branches and PRs.
 
+---
+
 🚧 Not implemented yet (Week 2+)
 
 - 3A signal generation (trend unlock, pullback zone, triggers).
