@@ -1,22 +1,25 @@
-# s3a_backtester/config.py
+# Configurations
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 import yaml
 
 
+# Set Entry Window (after OR, and until end of strategy)
 @dataclass
 class EntryWindow:
     start: str = "09:35"
     end: str = "11:00"
 
 
+# Stopping Conditions in respect to 3A.
 @dataclass
 class TimeStopCfg:
     mode: str = "15min"  # "15min" or "none"
     conditional_30m: bool = True
 
 
+# Slippage Configurations
 @dataclass
 class SlippageCfg:
     normal_ticks: int = 1
@@ -26,6 +29,7 @@ class SlippageCfg:
     )
 
 
+# Filtering Configurations
 @dataclass
 class FiltersCfg:
     skip_tiny_or: bool = True
@@ -34,17 +38,20 @@ class FiltersCfg:
     news_blackout: bool = False
 
 
+# Trading Zone Configurations
 @dataclass
 class ZonesCfg:
     allow_plus2sigma_disqualify: bool = True
 
 
+# Trend Confirmation Configurations
 @dataclass
 class TrendCfg:
     require_vwap_side: bool = True
     swing_lookback_5m: int = 2
 
 
+# Trade Management Configuration
 @dataclass
 class MgmtCfg:
     tp1_R: float = 1.0
@@ -53,6 +60,7 @@ class MgmtCfg:
     move_to_BE_on_tp1: bool = True
 
 
+# 3A General Configuration
 @dataclass
 class Config:
     instrument: str = "NQ"
@@ -67,8 +75,8 @@ class Config:
     management: MgmtCfg = field(default_factory=MgmtCfg)
 
 
+# Merge Dataclasses (Take the dataclass and overlay a dict of changes on top, recursing into nested dataclasses)
 def _merge_dc(obj, patch):
-    """Recursively merge a dict 'patch' into dataclass 'obj'."""
     if not isinstance(patch, dict):
         return obj
     for k, v in patch.items():
@@ -83,11 +91,8 @@ def _merge_dc(obj, patch):
     return obj
 
 
+# Load Configurations (YAML/JSON into a Config Dataclass)
 def load_config(path: str) -> Config:
-    """
-    Load YAML/JSON config into a Config dataclass.
-    Safe, deterministic. Missing keys fall back to defaults.
-    """
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     cfg = Config()

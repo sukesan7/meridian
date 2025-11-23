@@ -31,12 +31,13 @@ class Trend5mConfig:
     vwap_col: str = "vwap"
 
 
+# ------------------------------------
+# Compute intraday HH/HL vs LH/LL trend for a singular trading day
+# ------------------------------------
 def _trend_for_day(
     day: pd.DataFrame, cfg: Trend5mConfig
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
-    Compute intraday HH/HL vs LH/LL trend for a single trading day.
-
     Returns
     -------
     trend : Series[int]
@@ -49,11 +50,11 @@ def _trend_for_day(
     h = day[cfg.high_col]
     lo = day[cfg.low_col]
 
-    # Previous highs/lows based only on *past* bars (no look-ahead).
+    # Previous highs/lows based only on *past* bars (no look-ahead)
     prev_high = h.shift(1).rolling(cfg.lookback, min_periods=cfg.lookback).max()
     prev_low = lo.shift(1).rolling(cfg.lookback, min_periods=cfg.lookback).min()
 
-    # Structural comparisons.
+    # Structural comparisons
     hh = h > prev_high  # higher high
     hl = lo > prev_low  # higher low
     lh = h < prev_high  # lower high
@@ -83,10 +84,11 @@ def _trend_for_day(
     return trend, hh_hl, lh_ll
 
 
+# ------------------------------------
+# 5-minute bar Trend Direction
+# ------------------------------------
 def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.DataFrame:
     """
-    Compute 5-minute market-structure trend (HH/HL vs LH/LL) and VWAP-side flag.
-
     Parameters
     ----------
     df_5m : DataFrame
@@ -116,7 +118,7 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
     hh_hl = pd.Series(False, index=out.index, name="trend_hh_hl")
     lh_ll = pd.Series(False, index=out.index, name="trend_lh_ll")
 
-    # Work per trading day to avoid look-through across sessions.
+    # Work per trading day to avoid look-through across sessions
     for _, day in out.groupby(out.index.normalize()):
         day_trend, day_hh_hl, day_lh_ll = _trend_for_day(day, cfg)
         trend.loc[day.index] = day_trend
@@ -127,12 +129,12 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
     out["trend_hh_hl"] = hh_hl
     out["trend_lh_ll"] = lh_ll
 
-    # VWAP-side check: only if VWAP column is present.
+    # VWAP-side check: only if VWAP column is present
     if cfg.vwap_col in out.columns:
         vwap = out[cfg.vwap_col]
         close = out[cfg.close_col]
 
-        # Correct side: uptrend → close >= vwap; downtrend → close <= vwap.
+        # Correct side: uptrend → close >= vwap; downtrend → close <= vwap
         side_ok = np.where(
             trend > 0,
             close >= vwap,
@@ -140,7 +142,7 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
         )
         out["trend_vwap_ok"] = side_ok.astype(bool)
     else:
-        # If we don't have VWAP yet, just set False; engine can decide how to use it.
+        # If we don't have VWAP yet, just set False; engine can decide how to use it
         out["trend_vwap_ok"] = False
 
     return out

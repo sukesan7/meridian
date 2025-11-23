@@ -9,48 +9,25 @@ The goal of this project is to produce a **reproducible research harness** that 
 - What is realistic MaxDD and CAGR under Monte Carlo?
 
 This repo is structured like a small production quant project: clean package, CLI, tests, CI, and documentation.
-
 ---
 
-## Current Status (Week 1)
+## Current Status
 
-**Focus:** data foundation + deterministic scaffolding.
+- **Week 1** – Data & metrics:
+  - 1m loader + RTH slice + 5m/30m resample (no look-ahead),
+  - OR / VWAP ±σ / ATR15 features,
+  - Basic metrics (summary, equity curve, MaxDD, SQN),
+  - QQQ dev data pipeline documented.
+- **Week 2** – Structure & engine:
+  - 5m trend labelling (HH/HL vs LH/LL + VWAP),
+  - 1m micro swings,
+  - Engine unlock + 2σ disqualifier + first zone per day,
+  - Databento NQ/ES futures CSV→Parquet pipeline.
 
-✅ Implemented
-
-- Python package `s3a_backtester` with CLI entrypoint.
-- Data I/O:
-  - `load_minute_df` – strict 1-minute OHLCV loader.
-  - `slice_rth` – RTH filter (`09:30–16:00` ET, tz-aware, DST-safe).
-  - `resample(rule="5min"|"30min")` – right-labeled, right-closed, no look-ahead.
-- Session features:
-  - `compute_session_refs` – OR (09:30–09:35), `or_high`, `or_low`, `or_height`, PDH/PDL placeholders.
-  - `compute_session_vwap_bands` – session-anchored VWAP with ±1σ/±2σ bands.
-  - `compute_atr15` – 15-minute ATR over the 1-minute series.
-- Tests:
-  - I/O + RTH slicing.
-  - 5-min and 30-min resample alignment (no peek).
-  - OR/VWAP/bands.
-  - ATR15.
-  - Synthetic DST regression (RTH behavior across the DST switch).
-- Docs:
-  - `docs/data-notes.md` – data contract (schema, tz/DST, RTH, resampling, dev vs prod data).
-- CI:
-  - GitHub Actions matrix (Python 3.10/3.11) running pre-commit (ruff/black) + pytest on every push/PR.
-  - Protected `main`: changes go through feature branches and PRs.
-
-🚧 Not implemented yet (Week 2+)
-
-- 3A signal generation (trend unlock, pullback zone, triggers).
-- Trade simulation & portfolio accounting.
-- Walk-forward IS/OOS evaluation.
-- Monte Carlo on trade series.
-
-The current code is a **solid data/feature layer** ready for strategy logic.
-
+See `docs/week*-notes.md` for full notes.
 ---
 
-## Strategy 3A – one-paragraph snapshot
+## Strategy 3A
 
 3A is a **VWAP trend pullback** strategy on NQ/ES:
 
@@ -72,36 +49,48 @@ The backtester’s job is to encode these rules exactly and test them over 12–
 3a-backtester/
   .github/workflows/ci.yml      # CI: pre-commit + pytest (3.10/3.11)
   configs/
-    base.yaml                   # Default config (instrument, RTH window, risk params, etc.)
+    base.yaml                   # Default config (instrument, entry window, risk, filters)
   data/
     .gitkeep                    # Local data only (QQQ/NQ/ES 1-min) – not tracked
+    raw/
+        databento/
+            NQ/                 # Raw Databento CSVs (zstd-decompressed)
+            ES/                 # Raw Databento CSVs (zstd-decompressed)
+    vendor_parquet/
+        NQ/                     # Normalized Parquet for NQ (1-min, ET)
+        ES/                     # Normalized Parquet for ES
   docs/
     data-notes.md               # Data schema, tz/DST, RTH, resampling, dev vs prod data
+    week1-notes.md              # Notes regarding Week 1 progress
+    week2-notes.md              # Notes regarding Week 2 progress
   notebooks/
     README.md                   # Placeholder for future analysis notebooks
   outputs/
     .gitkeep                    # Backtest outputs (trades, summaries) – not tracked
+  scripts/
+    convert_databento_to_parquet.py     # Helper to normalize vendor CSVs to Parquet
   s3a_backtester/
     __init__.py
     cli.py                      # CLI entrypoint (run-backtest / walkforward / mc)
     config.py                   # Config dataclasses + YAML loader
     data_io.py                  # CSV/Parquet loader, tz handling, RTH slice, resample
-    features.py                 # OR/PDH/PDL, VWAP bands, ATR15, swing helpers
-    structure.py                # 5-min trend and micro-structure (stubs in Week 1)
-    engine.py                   # Signal generation & trade engine (stubs in Week 1)
+    features.py                 # OR/PDH/PDL, VWAP bands, ATR15, 1m swing markers
+    structure.py                # 5-min trend labeling (HH/HL vs LH/LL + VWAP)
+    engine.py                   # Signal generation: unlock, 2σ disqualifier, zones; trade stub
     slippage.py                 # Slippage models (stub)
     portfolio.py                # R-based sizing & PnL (stub)
-    metrics.py                  # Summary stats, equity curve, SQN
+    metrics.py                  # Summary stats, equity curve, MaxDD, SQN, group stats
     walkforward.py              # Rolling IS/OOS splits (stub)
-    monte_carlo.py              # MC simulator on trade series (stub)
+    monte_carlo.py              # Monte Carlo simulator on trade series (stub)
   tests/
-    test_io_rth_resample.py     # I/O, RTH slicing, 5/30-min resample, DST
-    test_refs_vwap.py           # OR, VWAP ±σ bands
-    test_metrics.py             # Metrics empty-safety, basic behaviour
+    test_features.py            # Session refs, VWAP/bands, ATR15, 1m swings
+    test_engine.py              # Unlock, zone, 2σ disqualifier, signal schema
+    test_metrics.py             # Metrics & equity curve empty-safety and basics
   pyproject.toml                # Build metadata, deps, CLI script `threea-run`
   .pre-commit-config.yaml       # ruff, ruff-format, black, EOF/trailing whitespace
   .editorconfig                 # Consistent editor settings
   .gitattributes                # Text normalization (LF)
+  .gitignore                    # Ignore virtualenv, data, outputs, build artifacts
   README.md                     # You are here
 ```
 ---
@@ -140,40 +129,8 @@ python -m pip install -e .[dev]
 ```
 
 This installs the package, CLI script `threea-run`, and dev tooling (pytest, ruff, black, pre-commit).
-
 ---
 
-# Dev Data (Week 1: QQQ 1-minute)
-
-For Week 1, the engine is being developed against **QQQ 1-minute RTH data** as a stand-in for the NQ/ES futures data.
-
-**1.** Drop a CSV or Parquet file under `data/`, eg:
-```text
-data/QQQ_1min_2025-04_to_2025-10.csv
-```
-
-**2.** Expected columns (see `docs/data-notes.md`):
-- `datetime` (UTC or ET, parseable),
-- `open`, `high`, `low`, `close`, `volume`,
-- optional `symbol`.
-
-**3.** The loader will:
-- parse timestamps,
-- convert to `America/New_York` (tz-aware),
-- sort by time,
-- later functions apply RTH slicing and resampling.
-
-Final production runs will use continuous, back-adjusted NQ/ES 1-minute data from a vendor such as Kibot, Barchart, or IQFeed; this is documented but not yet wired.
-
-### Vendor futures data (NQ, ES)
-
-For production-like tests we use CME futures data from Databento
-(NQ / ES 1-minute OHLCV). Raw CSVs are not committed; they live in
-`data/raw/databento/`, and we normalize them via
-`scripts/convert_databento_to_parquet.py` into
-`data/vendor_parquet/NQ` and `data/vendor_parquet/ES`.
-
----
 # Quickstart
 
 With your environment activated and dev data in `data/`:
@@ -194,7 +151,6 @@ In Week 1, the "backtest" is essentially a pipeline smoke test:
 - print a summary (currently zero trades, stats in R).
 
 Once the engine is implemented (Week 2+), this command will produce a full `trades.csv` and summary under `outputs/`.
-
 ---
 
 # Running Tests & Linting
@@ -208,14 +164,6 @@ pre-commit run --all-files
 
 # Run all tests
 pytest -q
-```
-
-Useful focused test runs:
-```bash
-pytest -q -k resample     # I/O + 5/30-min resample + no-peek alignment
-pytest -q -k refs         # OR, VWAP, bands
-pytest -q -k atr15        # ATR15 feature
-pytest -q -k dst          # DST regression (RTH window across clock change)
 ```
 
 CI runs these checks on every push and pull request for Python 3.10 and 3.11.

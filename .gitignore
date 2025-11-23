@@ -119,10 +119,10 @@ data/**
 outputs/**
 !outputs/.gitkeep
 
-# We globally ignore CSV/Parquet to prevent accidental data commits
+# Globally ignore CSV/Parquet to prevent accidental data commits
 *.csv
 *.parquet
 
-# But allow tiny synthetic fixtures for tests if you add them later
+# Allow tiny synthetic fixtures for tests
 !tests/fixtures/*.csv
 !tests/fixtures/*.parquet

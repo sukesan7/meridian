@@ -1,3 +1,4 @@
+# Tests for the structure
 import pandas as pd
 
 from s3a_backtester.structure import trend_5m, Trend5mConfig

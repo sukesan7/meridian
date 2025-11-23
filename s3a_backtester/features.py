@@ -1,18 +1,22 @@
+# Features
 from __future__ import annotations
 import pandas as pd
 import numpy as np
 
 
+# ------------------------------------------
+# Compute the per-session reference levels
+# ------------------------------------------
 def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
     """
     OR (09:30-09:35 left-inclusive), plus PDH/PDL carry-forward from prior RTH session.
     """
     out = pd.DataFrame(index=df1.index)
-    out["or_high"] = np.nan
-    out["or_low"] = np.nan
-    out["or_height"] = np.nan
+    out["or_high"] = np.nan  # opening range highs
+    out["or_low"] = np.nan  # opening range lows
+    out["or_height"] = np.nan  # opening range height
 
-    # OR per calendar day
+    # Opening Range for the Calendar day
     for _, daydf in df1.groupby(df1.index.date, sort=False):
         or_slice = daydf.between_time("09:30", "09:35", inclusive="left")
         if not or_slice.empty:
@@ -21,7 +25,7 @@ def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
             out.loc[or_slice.index, "or_low"] = lo
             out.loc[or_slice.index, "or_height"] = hi - lo
 
-    # PDH/PDL from prior RTH session
+    # Past Day Highs/Lows from Prior RTH session
     rth = df1.between_time("09:30", "16:00", inclusive="both")
     sess_hi = rth["high"].groupby(rth.index.date).max()
     sess_lo = rth["low"].groupby(rth.index.date).min()
@@ -33,12 +37,15 @@ def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
     out["pdh"] = dates.map(pdh_map).astype(float)
     out["pdl"] = dates.map(pdl_map).astype(float)
 
-    # placeholders for ONH/ONL if you want later
+    # placeholders for ONH/ONL if needed (week 4+)
     out["onh"] = np.nan
     out["onl"] = np.nan
     return out
 
 
+# ------------------------------------------
+# Compute session-anchored VWAP bands
+# ------------------------------------------
 def compute_session_vwap_bands(
     df1: pd.DataFrame, use_close: bool = True
 ) -> pd.DataFrame:
@@ -67,16 +74,15 @@ def compute_session_vwap_bands(
     return out.reindex(df1.index)
 
 
+# ------------------------------------------
+# Compute a 15-minute ATR-style volatility measure on the 1-min series
+# ------------------------------------------
 def compute_atr15(df1: pd.DataFrame, window: int = 15) -> pd.Series:
-    """Compute a 15-bar ATR-style volatility from 1-minute OHLC.
-
+    """
     True range per bar is max of:
       * high - low
       * abs(high - prev_close)
       * abs(low - prev_close)
-
-    Then we take a simple rolling mean over `window` bars.
-    Result is aligned to df1.index and named 'atr15'.
     """
     required = {"high", "low", "close"}
     missing = required - set(df1.columns)
@@ -89,6 +95,7 @@ def compute_atr15(df1: pd.DataFrame, window: int = 15) -> pd.Series:
 
     prev_close = close.shift(1)
 
+    # Compute True Range per bar
     tr_components = pd.concat(
         [
             high - low,
@@ -99,11 +106,15 @@ def compute_atr15(df1: pd.DataFrame, window: int = 15) -> pd.Series:
     )
     tr = tr_components.max(axis=1)
 
+    # Rolling window over 15 minutes (15 bars) or similar
     atr = tr.rolling(window=window, min_periods=1).mean()
     atr.name = "atr15"
     return atr
 
 
+# ------------------------------------------
+# Mark micro swing highs/lows on the 1-min series
+# ------------------------------------------
 def find_swings_1m(
     df1: pd.DataFrame,
     lb: int = 2,
@@ -112,20 +123,6 @@ def find_swings_1m(
     low_col: str = "low",
 ) -> pd.DataFrame:
     """
-    Mark micro swing highs/lows on 1-minute bars.
-
-    A bar i is a swing high if its high is strictly greater than the highs of the
-    previous `lb` bars and greater than or equal to the highs of the next `rb` bars
-    within the *same calendar day*.
-
-    A bar i is a swing low if its low is strictly lower than the lows of the
-    previous `lb` bars and lower than or equal to the lows of the next `rb` bars
-    within the same day.
-
-    This is a purely offline / structural feature: it uses both left and right
-    context, so you only use swing markers after the fact (never for real-time
-    entry decisions).
-
     Parameters
     ----------
     df1 : DataFrame

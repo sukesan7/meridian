@@ -1,3 +1,4 @@
+# Tests for the 3A Engine
 from s3a_backtester.engine import generate_signals, simulate_trades
 import pandas as pd
 
