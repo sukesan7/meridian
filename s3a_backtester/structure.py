@@ -146,3 +146,126 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
         out["trend_vwap_ok"] = False
 
     return out
+
+
+# ------------------------------------
+# 1-minute Bar Tagging (engulfing candle detection)
+# ------------------------------------
+def micro_swing_break(
+    df: pd.DataFrame,
+    swing_high_col: str = "swing_high",
+    swing_low_col: str = "swing_low",
+) -> pd.DataFrame:
+    """
+    Parameters
+    ----------
+    df :
+        1-minute OHLCV dataframe. Must contain at least:
+        - 'open', 'high', 'low', 'close'
+        - boolean swing marker columns:
+          * swing_high_col (default 'swing_high')
+          * swing_low_col  (default 'swing_low')
+        Typically these come from `features.find_swings_1m`.
+
+    Returns
+    -------
+    out : pd.DataFrame
+        Index matches `df.index` with columns:
+
+        - ``micro_break_dir`` : int in {-1, 0, 1}
+            +1  → current bar breaks the most recent swing high
+            -1  → current bar breaks the most recent swing low
+             0  → no break
+
+        - ``engulf_dir`` : int in {-1, 0, 1}
+            +1  → bullish engulf vs previous bar
+            -1  → bearish engulf vs previous bar
+             0  → no engulf
+
+    Notes
+    -----
+    - No look-ahead: only information up to the current bar is used.
+    - If both an up-break and down-break would trigger on the same bar
+      (pathological), up-break wins; this is extremely rare on 1-min data.
+    """
+    required = {"open", "high", "low", "close"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"micro_swing_break: missing columns: {sorted(missing)}")
+
+    high = df["high"].to_numpy(dtype="float64")
+    low = df["low"].to_numpy(dtype="float64")
+
+    swing_high = (
+        df.get(swing_high_col, pd.Series(False, index=df.index))
+        .fillna(False)
+        .to_numpy(dtype="bool")
+    )
+    swing_low = (
+        df.get(swing_low_col, pd.Series(False, index=df.index))
+        .fillna(False)
+        .to_numpy(dtype="bool")
+    )
+
+    n = len(df)
+    micro_dir = np.zeros(n, dtype="int8")
+
+    last_swing_high = np.nan
+    last_swing_low = np.nan
+    high_broken = False  # check if current swing high is broken
+    low_broken = False  # check if current swing low is broken
+
+    for i in range(n):
+        if swing_high[i]:
+            last_swing_high = high[i]
+            high_broken = False
+
+        if swing_low[i]:
+            last_swing_low = low[i]
+            low_broken = False
+
+        broke_up = (
+            not np.isnan(last_swing_high)
+            and not high_broken
+            and high[i] > last_swing_high
+        )
+        broke_down = (
+            not np.isnan(last_swing_low) and not low_broken and low[i] < last_swing_low
+        )
+
+        if broke_up and not broke_down:
+            micro_dir[i] = 1
+            high_broken = True
+        elif broke_down and not broke_up:
+            micro_dir[i] = -1
+            low_broken = True
+
+    # -------- Engulf detection (body engulf of previous bar) --------
+    op = df["open"]
+    cl = df["close"]
+    prev_op = op.shift(1)
+    prev_cl = cl.shift(1)
+
+    # Previous bar must exist
+    has_prev = prev_op.notna() & prev_cl.notna()
+
+    # Bullish engulf: previous red, current green, current body fully contains previous body
+    bull = (
+        has_prev & (prev_cl < prev_op) & (cl > op) & (op <= prev_cl) & (cl >= prev_op)
+    )
+
+    # Bearish engulf: previous green, current red, current body fully contains previous body
+    bear = (
+        has_prev & (prev_cl > prev_op) & (cl < op) & (op >= prev_cl) & (cl <= prev_op)
+    )
+
+    engulf_dir = np.where(bull, 1, np.where(bear, -1, 0)).astype("int8")
+
+    out = pd.DataFrame(
+        {
+            "micro_break_dir": micro_dir,
+            "engulf_dir": engulf_dir,
+        },
+        index=df.index,
+    )
+    return out
