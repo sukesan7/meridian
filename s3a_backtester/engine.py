@@ -2,6 +2,7 @@
 # Strategy 3A Brain + State Machine
 from __future__ import annotations
 import pandas as pd
+import numpy as np
 from typing import Any
 from .config import Config
 
@@ -199,5 +200,60 @@ def generate_signals(
         if not candidates.empty:
             zone_ts = candidates.index[0]  # first zone bar of the day
             out.loc[zone_ts, "in_zone"] = True  # mark exactly one bar
+
+    # ------------------------------------------------------------------
+    # 5) Trigger logic: engulf or micro-swing break near the zone
+    # ------------------------------------------------------------------
+    # Ensure column exists even if inputs are missing these features
+    if "trigger_ok" not in out:
+        out["trigger_ok"] = False
+
+    # Direction: 1 for long, -1 for short (we already use this in tests)
+    if "direction" not in out:
+        out["direction"] = np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0))
+
+    # Pattern signals from structure.micro_swing_break
+    micro_dir = out["micro_break_dir"].astype("int8") if "micro_break_dir" in out else 0
+    engulf_dir = out["engulf_dir"].astype("int8") if "engulf_dir" in out else 0
+
+    # Any pattern in the *trend* direction
+    long_pattern = (micro_dir > 0) | (engulf_dir > 0)
+    short_pattern = (micro_dir < 0) | (engulf_dir < 0)
+
+    # Tick size (used for the "≤ 1 tick beyond zone" rule)
+    tick_size = 1.0
+    if cfg is not None:
+        inst = getattr(cfg, "instrument", None)
+        tick_size = getattr(inst, "tick_size", tick_size)
+
+    close = out["close"]
+
+    # Price near the long zone: inside [VWAP, +1σ] or up to 1 tick above +1σ
+    long_zone_core = (close >= out["vwap"]) & (close <= out["vwap_1u"])
+    long_zone_plus = (close > out["vwap_1u"]) & (close <= out["vwap_1u"] + tick_size)
+    long_zone_ok = long_zone_core | long_zone_plus
+
+    # Price near the short zone: inside [VWAP, -1σ] or up to 1 tick below -1σ
+    short_zone_core = (close <= out["vwap"]) & (close >= out["vwap_1d"])
+    short_zone_plus = (close < out["vwap_1d"]) & (close >= out["vwap_1d"] - tick_size)
+    short_zone_ok = short_zone_core | short_zone_plus
+
+    long_trig = (
+        (out["direction"] == 1)
+        & long_pattern
+        & long_zone_ok
+        & out["time_window_ok"]
+        & ~out["disqualified_2sigma"]
+    )
+
+    short_trig = (
+        (out["direction"] == -1)
+        & short_pattern
+        & short_zone_ok
+        & out["time_window_ok"]
+        & ~out["disqualified_2sigma"]
+    )
+
+    out["trigger_ok"] = long_trig | short_trig
 
     return out

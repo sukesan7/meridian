@@ -3,6 +3,9 @@ from s3a_backtester.engine import generate_signals, simulate_trades
 import pandas as pd
 
 
+# --------------------------------------------
+# Test engine stubs
+# --------------------------------------------
 def test_engine_stubs_run():
     idx = pd.date_range(
         "2024-01-02 09:30", periods=10, freq="1min", tz="America/New_York"
@@ -56,6 +59,9 @@ def _make_simple_day_index():
     )
 
 
+# --------------------------------------------
+# Test unlock and zone long trend
+# --------------------------------------------
 def test_generate_signals_unlock_and_zone_long():
     idx = _make_simple_day_index()
 
@@ -117,6 +123,9 @@ def test_generate_signals_unlock_and_zone_long():
     assert out["time_window_ok"].all()
 
 
+# --------------------------------------------
+# Test 2sigma disqualifers
+# --------------------------------------------
 def test_generate_signals_disqualified_long_if_opposite_2sigma_hit_first():
     idx = _make_simple_day_index()
 
@@ -155,6 +164,9 @@ def test_generate_signals_disqualified_long_if_opposite_2sigma_hit_first():
     assert out.loc[unlock_ts, "disqualified_2sigma"]
 
 
+# --------------------------------------------
+# Test if zone requires an unlock
+# --------------------------------------------
 def test_generate_signals_zone_requires_unlock():
     """No unlock => no zone, even if price sits in the VWAP±1σ band."""
     idx = _make_simple_day_index()
@@ -187,6 +199,9 @@ def test_generate_signals_zone_requires_unlock():
     assert not bool(out["in_zone"].any())
 
 
+# --------------------------------------------
+# Test there can only be one zone per day (first unlock)
+# --------------------------------------------
 def test_generate_signals_only_first_zone_per_day():
     """After unlock, only the first pullback into the zone is marked."""
     idx = _make_simple_day_index()
@@ -235,6 +250,9 @@ def test_generate_signals_only_first_zone_per_day():
     assert zone_indices == [idx[7]]
 
 
+# --------------------------------------------
+# Test disqualified zone block
+# --------------------------------------------
 def test_generate_signals_zone_blocked_if_disqualified():
     """
     If the opposite 2σ band is breached before unlock, we still unlock,
@@ -286,3 +304,50 @@ def test_generate_signals_zone_blocked_if_disqualified():
 
     # Therefore no zone should be marked
     assert not bool(out["in_zone"].any())
+
+
+# --------------------------------------------
+# Test trigger
+# --------------------------------------------
+def _make_simple_day_index():
+    return pd.date_range(
+        "2024-01-02 09:30", periods=16, freq="1min", tz="America/New_York"
+    )
+
+
+def test_trigger_ok_long_micro_break_inside_zone():
+    idx = _make_simple_day_index()
+
+    # Prices: OR 100–110, VWAP 105, zone [105, 110]
+    close = [104.0] * len(idx)
+    close[5] = 111.0  # 09:35 unlock (close > ORH)
+    close[7] = 108.0  # 09:37: in zone and micro-break up
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 100.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": 1,
+            # micro_swing_break output: mark a +1 break at 09:37
+            "micro_break_dir": [0] * len(idx),
+            "engulf_dir": [0] * len(idx),
+        },
+        index=idx,
+    )
+    df.loc[idx[7], "micro_break_dir"] = 1
+
+    out = generate_signals(df)
+
+    trig_rows = out[out["trigger_ok"]]
+    assert list(trig_rows.index) == [idx[7]]
+    assert out.loc[idx[7], "direction"] == 1
