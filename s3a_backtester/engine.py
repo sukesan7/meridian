@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from typing import Any
 from .config import Config
+from .slippage import apply_slippage
 
 _SIGNAL_COLS = [
     "time_window_ok",
@@ -38,15 +39,201 @@ _TRADE_COLS = [
 ]
 
 
-# Future place for actual trades, currently a stub
+# Simluation for Trades
 def simulate_trades(
-    df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config
+    df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config | None
 ) -> pd.DataFrame:
     """
-    Bar-close entries; management TBD.
-    v0: return an empty but correctly-schematized DataFrame so downstream code/CLI works.
+    Entry-only simulation for 3A.
+
+    We assume `signals` is the 1-minute DataFrame returned by `generate_signals`,
+    i.e. it already contains OHLCV plus:
+        - direction        (+1 long, -1 short, 0 flat)
+        - trigger_ok       (bool)
+        - riskcap_ok       (bool)
+        - time_window_ok   (bool)
+        - disqualified_2sigma (bool)
+        - stop_price       (float)
+        - or_high / or_low (float)
+        - vwap, vwap_1u, vwap_1d
+        - micro_break_dir, engulf_dir (optional)
+
+    This function:
+        - filters valid entry bars
+        - applies slippage on entry using `apply_slippage`
+        - computes R distance and TP1/TP2
+        - returns a normalized trade log DataFrame.
     """
-    return pd.DataFrame(columns=_TRADE_COLS)
+    # Work off the signals frame; df1 is kept for signature compatibility.
+    if signals is None or signals.empty:
+        return pd.DataFrame(columns=_TRADE_COLS)
+
+    df = signals.copy()
+
+    # Ensure expected columns exist with safe defaults.
+    defaults: dict[str, object] = {
+        "direction": 0,
+        "trigger_ok": False,
+        "riskcap_ok": True,
+        "time_window_ok": True,
+        "disqualified_2sigma": False,
+        "stop_price": np.nan,
+        "or_high": np.nan,
+        "or_low": np.nan,
+        "vwap": np.nan,
+        "vwap_1u": np.nan,
+        "vwap_1d": np.nan,
+        "micro_break_dir": 0,
+        "engulf_dir": 0,
+    }
+    for col, val in defaults.items():
+        if col not in df:
+            df[col] = val
+
+    # Direction flags
+    direction = pd.to_numeric(df["direction"], errors="coerce").fillna(0).astype(int)
+
+    # Candidate entries: direction present, trigger, riskcap, time window, not disqualified.
+    mask = (
+        direction.ne(0)
+        & df["trigger_ok"].astype(bool)
+        & df["riskcap_ok"].astype(bool)
+        & df["time_window_ok"].astype(bool)
+        & ~df["disqualified_2sigma"].astype(bool)
+    )
+
+    entries = df[mask].copy()
+    if entries.empty:
+        return pd.DataFrame(columns=_TRADE_COLS)
+
+    # Tick size resolution
+    tick_size = 0.25  # sensible default for NQ/ES
+    if cfg is not None:
+        tick_size = getattr(cfg, "tick_size", tick_size)
+        inst = getattr(cfg, "instrument", None)
+        if inst is not None:
+            tick_size = getattr(inst, "tick_size", tick_size)
+    tick_size = float(tick_size) if tick_size else 0.25
+
+    records: list[dict[str, object]] = []
+
+    for ts, row in entries.iterrows():
+        dir_val = int(row["direction"])
+        if dir_val == 0:
+            continue
+
+        side = "long" if dir_val > 0 else "short"
+
+        raw_price = float(row["close"])
+        stop = float(row["stop_price"]) if pd.notna(row["stop_price"]) else np.nan
+        if not np.isfinite(stop):
+            # Without a valid stop we cannot define R; skip this bar.
+            continue
+
+        # Apply slippage on entry
+        entry_price = apply_slippage(side, ts, raw_price, cfg)
+
+        risk_per_unit = abs(entry_price - stop)
+        if risk_per_unit <= 0:
+            # Degenerate; skip
+            continue
+
+        # Planned R per trade (in R-space; sizing is a later concern)
+        risk_R = 1.0
+
+        # TP1 / TP2 in price terms
+        direction_sign = 1.0 if dir_val > 0 else -1.0
+        tp1 = entry_price + direction_sign * risk_per_unit * 1.0
+        tp2 = entry_price + direction_sign * risk_per_unit * 2.0
+
+        # OR height for logging
+        or_high = float(row.get("or_high", np.nan))
+        or_low = float(row.get("or_low", np.nan))
+        or_height = (
+            or_high - or_low if np.isfinite(or_high) and np.isfinite(or_low) else np.nan
+        )
+
+        # SL in ticks
+        sl_ticks = risk_per_unit / tick_size if tick_size > 0 else np.nan
+
+        # Slippage in ticks at entry (signed adverse ticks)
+        slip_ticks = 0.0
+        if tick_size > 0:
+            slip_ticks = (entry_price - raw_price) / tick_size
+            # could also take abs() if you want strictly non-negative
+
+        # Trigger type heuristic
+        micro_dir = int(row.get("micro_break_dir", 0) or 0)
+        engulf_dir = int(row.get("engulf_dir", 0) or 0)
+        trigger_type = "unknown"
+        if dir_val > 0:
+            if micro_dir > 0:
+                trigger_type = "swingbreak"
+            elif engulf_dir > 0:
+                trigger_type = "engulf"
+        else:
+            if micro_dir < 0:
+                trigger_type = "swingbreak"
+            elif engulf_dir < 0:
+                trigger_type = "engulf"
+
+        # Location: coarse classification relative to VWAP bands
+        vwap = float(row.get("vwap", np.nan))
+        v1u = float(row.get("vwap_1u", np.nan))
+        v1d = float(row.get("vwap_1d", np.nan))
+        location = "none"
+        if np.isfinite(vwap):
+            price = float(row["close"])
+            if dir_val > 0:
+                # Long: VWAP / +1σ zone
+                if np.isfinite(v1u) and vwap <= price <= v1u:
+                    # choose label by proximity
+                    location = (
+                        "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1σ"
+                    )
+            else:
+                # Short: VWAP / -1σ zone
+                if np.isfinite(v1d) and v1d <= price <= vwap:
+                    location = (
+                        "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1σ"
+                    )
+
+        records.append(
+            {
+                "date": ts.date(),
+                "entry_time": ts,
+                "exit_time": pd.NaT,  # exits/time stops come later
+                "side": side,
+                "entry": float(entry_price),
+                "stop": float(stop),
+                "tp1": float(tp1),
+                "tp2": float(tp2),
+                "or_height": float(or_height) if np.isfinite(or_height) else np.nan,
+                "sl_ticks": float(sl_ticks) if np.isfinite(sl_ticks) else np.nan,
+                "risk_R": float(risk_R),
+                "realized_R": 0.0,  # populated once exits are implemented
+                "t_to_tp1_min": np.nan,
+                "trigger_type": trigger_type,
+                "location": location,
+                "time_stop": "none",
+                "disqualifier": "none",
+                "slippage_entry_ticks": float(slip_ticks),
+                "slippage_exit_ticks": 0.0,
+            }
+        )
+
+    if not records:
+        return pd.DataFrame(columns=_TRADE_COLS)
+
+    trades = pd.DataFrame.from_records(records)
+
+    # Enforce column order / presence as per schema
+    for col in _TRADE_COLS:
+        if col not in trades:
+            trades[col] = np.nan
+
+    trades = trades[_TRADE_COLS]
+    return trades
 
 
 # Signal Generation for 3A

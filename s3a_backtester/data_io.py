@@ -8,40 +8,66 @@ REQ_COLS = ("open", "high", "low", "close", "volume")
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
-    # Load 1-minute OHLCV data, parse UTC timestamp, return the timezone aware ET index with strict schema
-    df = (
-        pd.read_parquet(path)
-        if path.lower().endswith(".parquet")
-        else pd.read_csv(path)
-    )
+    """
+    Load a 1-minute OHLCV file (CSV or Parquet) and normalize schema.
 
-    # Detect the timestamp column
-    ts = None
-    for cand in ("timestamp", "datetime", "time", "date"):
-        if cand in df.columns:
-            ts = pd.to_datetime(df[cand], utc=True, errors="coerce")
-            df = df.drop(columns=[cand])
+    - Returns a tz-aware DatetimeIndex in `tz` (default ET).
+    - Forces lowercase, stripped column names.
+    - Requires: open, high, low, close, volume.
+    """
+    # --- read file ---
+    if path.lower().endswith(".parquet"):
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path)
+
+    # --- normalize column names to lowercase + strip whitespace ---
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # --- pick datetime column ---
+    dt_col = None
+    for c in ("datetime", "timestamp", "time", "date"):
+        if c in df.columns:
+            dt_col = c
             break
-    if ts is None:
-        ts = pd.to_datetime(df.iloc[:, 0], utc=True, errors="coerce")
-        df = df.iloc[:, 1:]
-    if ts.isna().any():
-        raise ValueError(f"Invalid timestamps: {int(ts.isna().sum())} rows")
 
-    # Timezone-convert on a DateTimeIndex
-    idx = pd.DatetimeIndex(ts).tz_convert(tz)
+    if dt_col is None:
+        raise ValueError(
+            f"load_minute_df: could not find datetime column in {path!r}; "
+            f"got columns={list(df.columns)}"
+        )
+
+    # --- parse to DatetimeIndex and convert/localize to tz ---
+    idx = pd.to_datetime(df[dt_col], errors="coerce")
+    if idx.isna().any():
+        raise ValueError(
+            f"load_minute_df: datetime parse failed for column {dt_col!r} in {path!r}"
+        )
+
+    idx = pd.DatetimeIndex(idx)
+    if idx.tz is None:
+        # assume naive timestamps are already in tz (ET)
+        idx = idx.tz_localize(tz)
+    else:
+        idx = idx.tz_convert(tz)
+
     df.index = idx
 
-    # Strict Schema
-    missing = [c for c in REQ_COLS if c not in df.columns]
+    # drop the original datetime column if still present
+    if dt_col in df.columns:
+        df = df.drop(columns=[dt_col])
+
+    # --- enforce OHLCV contract ---
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Missing columns: {missing}")
+        raise ValueError(
+            f"load_minute_df: missing required OHLCV columns {missing} in {path!r}; "
+            f"got columns={list(df.columns)}"
+        )
 
-    # Sanity Check
+    # final clean-up
     df = df.sort_index()
-    if not df.index.is_monotonic_increasing:
-        raise ValueError("Index not sorted ascending")
-
     return df
 
 
