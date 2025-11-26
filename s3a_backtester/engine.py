@@ -105,6 +105,7 @@ def generate_signals(
     if ew is None:
         # No explicit entry window (unit tests), then all bars are allowed
         time_window = pd.Series(True, index=out.index)
+    # create the actual 3A entry window
     else:
         start_str = getattr(ew, "start", "09:35")
         end_str = getattr(ew, "end", "11:00")
@@ -118,6 +119,7 @@ def generate_signals(
     # ---------------------------------------------------------------
     # Direction & Unlock Logic
     # ---------------------------------------------------------------
+    # figure out if we are in an uptrend or a downtrend for 5 min
     is_long_trend = out["trend_5m"] > 0
     is_short_trend = out["trend_5m"] < 0
 
@@ -202,13 +204,13 @@ def generate_signals(
             out.loc[zone_ts, "in_zone"] = True  # mark exactly one bar
 
     # ------------------------------------------------------------------
-    # 5) Trigger logic: engulf or micro-swing break near the zone
+    # Trigger logic: engulf or micro-swing break near the zone
     # ------------------------------------------------------------------
     # Ensure column exists even if inputs are missing these features
     if "trigger_ok" not in out:
         out["trigger_ok"] = False
 
-    # Direction: 1 for long, -1 for short (we already use this in tests)
+    # Direction: 1 for long, -1 for short
     if "direction" not in out:
         out["direction"] = np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0))
 
@@ -238,6 +240,7 @@ def generate_signals(
     short_zone_plus = (close < out["vwap_1d"]) & (close >= out["vwap_1d"] - tick_size)
     short_zone_ok = short_zone_core | short_zone_plus
 
+    # trigger for longs
     long_trig = (
         (out["direction"] == 1)
         & long_pattern
@@ -246,6 +249,7 @@ def generate_signals(
         & ~out["disqualified_2sigma"]
     )
 
+    # trigger for shorts
     short_trig = (
         (out["direction"] == -1)
         & short_pattern
@@ -255,5 +259,72 @@ def generate_signals(
     )
 
     out["trigger_ok"] = long_trig | short_trig
+
+    # ------------------------------------------------------------------
+    # Pre-entry: stop_price + riskcap_ok
+    # ------------------------------------------------------------------
+    # Defaults so older tests / minimal DataFrames don’t break.
+    if "riskcap_ok" not in out:
+        out["riskcap_ok"] = True
+    if "stop_price" not in out:
+        out["stop_price"] = np.nan
+
+    needed = {"high", "low", "close", "or_high", "or_low", "swing_high", "swing_low"}
+    if not needed.issubset(out.columns):
+        # We don't have swing info or OR levels yet → nothing to do.
+        return out
+
+    # Latest swing highs/lows (1-min) carried forward per bar.
+    last_swing_high = out["high"].where(out["swing_high"]).ffill()
+    last_swing_low = out["low"].where(out["swing_low"]).ffill()
+
+    # Direction for risk logic: use sign of 5-min trend.
+    trend_sign = np.sign(out["trend_5m"].fillna(0.0))
+    is_long = trend_sign > 0
+    is_short = trend_sign < 0
+
+    # Invalidation swing price: last swing low for longs, last swing high for shorts.
+    invalidation = np.where(
+        is_long,
+        last_swing_low,
+        np.where(is_short, last_swing_high, np.nan),
+    )
+
+    # Tick size: try to pull from cfg, otherwise fall back to a reasonable default.
+    tick_size = 0.25  # sensible default for NQ/ES
+    if cfg is not None:
+        # Allow either cfg.tick_size or cfg.instrument.tick_size style configs.
+        tick_size = getattr(cfg, "tick_size", tick_size)
+        instr = getattr(cfg, "instrument", None)
+        if instr is not None:
+            tick_size = getattr(instr, "tick_size", tick_size)
+
+    # Stop price: 1 tick beyond invalidation swing.
+    stop_price = np.where(
+        is_long,
+        invalidation - tick_size,
+        np.where(is_short, invalidation + tick_size, np.nan),
+    )
+    out["stop_price"] = stop_price
+
+    # OR height per session (same all day, but computed per-bar for convenience).
+    or_height = (out["or_high"] - out["or_low"]).groupby(dates).transform("first")
+
+    # Risk-cap multiple: how many OR-heights we allow for SL distance.
+    risk_cap_multiple = 1.25
+    if cfg is not None:
+        risk_cap_multiple = getattr(cfg, "risk_cap_multiple", risk_cap_multiple)
+
+    # Stop-loss distance in price terms.
+    sl_dist = (out["close"] - out["stop_price"]).abs()
+
+    # Only evaluate riskcap where we have a trend, swings, and a defined stop.
+    candidate = is_long | is_short
+    candidate &= sl_dist.notna() & or_height.notna()
+
+    # Default: everything is OK. We only flip to False where we exceed the cap.
+    out["riskcap_ok"] = True
+    too_wide = sl_dist > (risk_cap_multiple * or_height)
+    out.loc[candidate & too_wide, "riskcap_ok"] = False
 
     return out
