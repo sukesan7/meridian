@@ -91,8 +91,8 @@ def test_find_swings_1m_basic():
 
     out = find_swings_1m(df, lb=1, rb=1)
 
-    swing_high_idx = list(out.index[out["swing_high_1m"]])
-    swing_low_idx = list(out.index[out["swing_low_1m"]])
+    swing_high_idx = list(out.index[out["swing_high"]])
+    swing_low_idx = list(out.index[out["swing_low"]])
 
     assert swing_high_idx == [idx[1], idx[3]]
     assert swing_low_idx == [idx[1], idx[3]]
@@ -130,7 +130,7 @@ def test_find_swings_1m_respects_session_boundaries():
 
     out = find_swings_1m(df, lb=1, rb=1)
 
-    swing_high_idx = list(out.index[out["swing_high_1m"]])
+    swing_high_idx = list(out.index[out["swing_high"]])
 
     # Expect one swing high in each session (second bar of each day)
     assert swing_high_idx == [idx_day1[1], idx_day2[1]]

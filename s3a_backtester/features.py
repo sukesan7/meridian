@@ -2,6 +2,7 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
+from datetime import time
 
 
 # ------------------------------------------
@@ -9,37 +10,42 @@ import numpy as np
 # ------------------------------------------
 def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
     """
-    OR (09:30-09:35 left-inclusive), plus PDH/PDL carry-forward from prior RTH session.
+    Add session-level reference columns to df1:
+
+      - or_high, or_low, or_height (09:30–09:35 opening range, per day)
+      - pdh, pdl, onh, onl (placeholders for now)
+
+    Returns a *copy* of df1 with these extra columns.
+    Does NOT drop existing OHLCV columns.
     """
-    out = pd.DataFrame(index=df1.index)
-    out["or_high"] = np.nan  # opening range highs
-    out["or_low"] = np.nan  # opening range lows
-    out["or_height"] = np.nan  # opening range height
+    out = df1.copy()
 
-    # Opening Range for the Calendar day
-    for _, daydf in df1.groupby(df1.index.date, sort=False):
-        or_slice = daydf.between_time("09:30", "09:35", inclusive="left")
-        if not or_slice.empty:
-            hi, lo = or_slice["high"].max(), or_slice["low"].min()
-            out.loc[or_slice.index, "or_high"] = hi
-            out.loc[or_slice.index, "or_low"] = lo
-            out.loc[or_slice.index, "or_height"] = hi - lo
+    # Ensure the columns exist
+    for col in ["or_high", "or_low", "or_height", "pdh", "pdl", "onh", "onl"]:
+        if col not in out.columns:
+            out[col] = np.nan
 
-    # Past Day Highs/Lows from Prior RTH session
-    rth = df1.between_time("09:30", "16:00", inclusive="both")
-    sess_hi = rth["high"].groupby(rth.index.date).max()
-    sess_lo = rth["low"].groupby(rth.index.date).min()
-    pdh_map = sess_hi.shift(1)  # prior session’s high
-    pdl_map = sess_lo.shift(1)  # prior session’s low
+    grouped = out.groupby(out.index.date, sort=False)
+    or_start = time(9, 30)
+    or_end = time(9, 35)
 
-    # broadcast back to minutes
-    dates = pd.Series(df1.index.date, index=df1.index)
-    out["pdh"] = dates.map(pdh_map).astype(float)
-    out["pdl"] = dates.map(pdl_map).astype(float)
+    for _, day in grouped:
+        # Opening range: 09:30–09:35, excluding the 09:35 bar
+        or_slice = day.between_time(or_start, or_end, inclusive="left")
+        if or_slice.empty:
+            continue
 
-    # placeholders for ONH/ONL if needed (week 4+)
-    out["onh"] = np.nan
-    out["onl"] = np.nan
+        or_high = or_slice["high"].max()
+        or_low = or_slice["low"].min()
+        or_height = or_high - or_low
+
+        mask = out.index.isin(day.index)
+        out.loc[mask, "or_high"] = or_high
+        out.loc[mask, "or_low"] = or_low
+        out.loc[mask, "or_height"] = or_height
+
+        # PDH/PDL/ONH/ONL left as NaN placeholders for now
+
     return out
 
 
@@ -49,29 +55,48 @@ def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
 def compute_session_vwap_bands(
     df1: pd.DataFrame, use_close: bool = True
 ) -> pd.DataFrame:
+    if "close" not in df1.columns:
+        # Debug Guard
+        raise ValueError(f"compute_session_vwap_bands: columns={list(df1.columns)}")
+    out = df1.copy()
+
     price = (
-        df1["close"] if use_close else (df1["high"] + df1["low"] + df1["close"]) / 3.0
+        out["close"] if use_close else (out["high"] + out["low"] + out["close"]) / 3.0
     )
-    vol = df1.get("volume", pd.Series(1.0, index=df1.index)).astype(float)
-    parts = []
-    for _, day in df1.groupby(df1.index.date, sort=False):
-        day = day[day.index.time >= pd.Timestamp("09:30").time()]
+    vol = out.get("volume", pd.Series(1.0, index=out.index)).astype(float)
+
+    vwap = pd.Series(index=out.index, dtype="float64")
+    sd = pd.Series(index=out.index, dtype="float64")
+
+    grouped = out.groupby(out.index.date, sort=False)
+    or_start = time(9, 30)
+
+    for _, day in grouped:
+        # Only compute VWAP from 09:30 onwards within the session
+        day = day[day.index.time >= or_start]
         if day.empty:
             continue
-        pv = (price.loc[day.index] * vol.loc[day.index]).cumsum()
-        cv = vol.loc[day.index].cumsum()
-        vwap = pv / cv
-        sd = price.loc[day.index].expanding().std().fillna(0.0)
-        tmp = pd.DataFrame(index=day.index)
-        tmp["vwap"] = vwap
-        tmp["vwap_sd"] = sd
-        tmp["band_p1"] = vwap + sd
-        tmp["band_m1"] = vwap - sd
-        tmp["band_p2"] = vwap + 2 * sd
-        tmp["band_m2"] = vwap - 2 * sd
-        parts.append(tmp)
-    out = pd.concat(parts) if parts else pd.DataFrame(index=df1.index)
-    return out.reindex(df1.index)
+
+        p = price.loc[day.index]
+        v = vol.loc[day.index]
+
+        pv = (p * v).cumsum()
+        cv = v.cumsum()
+
+        vwap_day = pv / cv
+        sd_day = p.expanding().std().fillna(0.0)
+
+        vwap.loc[day.index] = vwap_day
+        sd.loc[day.index] = sd_day
+
+    out["vwap"] = vwap
+    out["vwap_sd"] = sd
+    out["band_p1"] = vwap + sd
+    out["band_m1"] = vwap - sd
+    out["band_p2"] = vwap + 2 * sd
+    out["band_m2"] = vwap - 2 * sd
+
+    return out
 
 
 # ------------------------------------------
@@ -143,8 +168,8 @@ def find_swings_1m(
         raise ValueError("lb and rb must be >= 1")
 
     df = df1.copy()
-    df["swing_high_1m"] = False
-    df["swing_low_1m"] = False
+    df["swing_high"] = False
+    df["swing_low"] = False
 
     # Group by calendar day in the index's timezone
     for _, day_df in df.groupby(df.index.normalize()):
@@ -171,7 +196,7 @@ def find_swings_1m(
             if np.all(lo < lows[i - lb : i]) and np.all(lo <= lows[i + 1 : i + rb + 1]):
                 swing_low[i] = True
 
-        df.loc[day_df.index, "swing_high_1m"] = swing_high
-        df.loc[day_df.index, "swing_low_1m"] = swing_low
+        df.loc[day_df.index, "swing_high"] = swing_high
+        df.loc[day_df.index, "swing_low"] = swing_low
 
     return df
