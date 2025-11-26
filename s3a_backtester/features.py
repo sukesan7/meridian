@@ -148,10 +148,12 @@ def find_swings_1m(
     low_col: str = "low",
 ) -> pd.DataFrame:
     """
+    Mark 1-minute swing highs/lows, day by day.
+
     Parameters
     ----------
     df1 : DataFrame
-        1-minute OHLCV data indexed by tz-aware timestamps.
+        1-minute OHLCV data.
     lb, rb : int
         Number of bars to the left / right to define a swing.
     high_col, low_col : str
@@ -161,8 +163,8 @@ def find_swings_1m(
     -------
     DataFrame
         Copy of df1 with boolean columns:
-        - 'swing_high_1m'
-        - 'swing_low_1m'
+        - 'swing_high'
+        - 'swing_low'
     """
     if lb < 1 or rb < 1:
         raise ValueError("lb and rb must be >= 1")
@@ -171,8 +173,23 @@ def find_swings_1m(
     df["swing_high"] = False
     df["swing_low"] = False
 
-    # Group by calendar day in the index's timezone
-    for _, day_df in df.groupby(df.index.normalize()):
+    idx = df.index
+
+    # --- Determine per-day grouping keys ---
+    if isinstance(idx, pd.DatetimeIndex):
+        # Ideal path: already datetime-like
+        day_keys = idx.normalize()
+    else:
+        # Try to parse index to datetime; if that fails, fall back to "single day"
+        dt = pd.to_datetime(idx, errors="coerce")
+        if dt.isna().any():
+            # Fallback: treat entire series as one group
+            day_keys = pd.Series(0, index=idx)
+        else:
+            day_keys = dt.normalize()
+
+    # --- Process each "day" separately ---
+    for _, day_df in df.groupby(day_keys):
         n = len(day_df)
         if n == 0:
             continue
@@ -188,11 +205,13 @@ def find_swings_1m(
             hi = highs[i]
             lo = lows[i]
 
+            # Local high: strictly greater than left, >= right
             if np.all(hi > highs[i - lb : i]) and np.all(
                 hi >= highs[i + 1 : i + rb + 1]
             ):
                 swing_high[i] = True
 
+            # Local low: strictly lower than left, <= right
             if np.all(lo < lows[i - lb : i]) and np.all(lo <= lows[i + 1 : i + rb + 1]):
                 swing_low[i] = True
 

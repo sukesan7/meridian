@@ -1,8 +1,12 @@
 # Command Line
-# Purpose of this file is to glue together config loading, data loading, engine calls, and output.
-# Orchestrate: parse -> load -> run -> save.
+# Purpose of this file is to glue together config loading, data loading,
+# engine calls, and output.
 from __future__ import annotations
+
 import argparse
+import pandas as pd
+
+from typing import List
 from .config import load_config
 from .data_io import load_minute_df, slice_rth, resample
 from .features import (
@@ -14,7 +18,6 @@ from .features import (
 from .structure import trend_5m, micro_swing_break
 from .engine import generate_signals, simulate_trades
 from .metrics import compute_summary
-import pandas as pd
 
 
 def run_backtest(config_path: str, data_path: str) -> None:
@@ -24,34 +27,56 @@ def run_backtest(config_path: str, data_path: str) -> None:
     df1 = load_minute_df(data_path, tz=cfg.tz)
     df1 = slice_rth(df1)
 
-    # 2) Core session features
-    df1 = compute_session_refs(df1)
-    df1 = compute_session_vwap_bands(df1)
-    df1["atr15"] = compute_atr15(df1)
+    # 2) ATR and session reference levels
+    #    compute_atr15 may return a Series or a DataFrame; attach, don't overwrite.
+    atr = compute_atr15(df1)
+    if isinstance(atr, pd.Series):
+        df1["atr15"] = atr
+    elif isinstance(atr, pd.DataFrame):
+        for col in atr.columns:
+            df1[col] = atr[col]
 
-    # 3) 5-minute resample for structure / trend
+    # compute_session_refs should receive a full OHLCV DataFrame
+    refs = compute_session_refs(df1)
+    for col in refs.columns:
+        df1[col] = refs[col]
+
+    # 3) Session VWAP bands (also overlay)
+    bands = compute_session_vwap_bands(df1)
+    if not bands.empty:
+        mapping = {
+            "vwap": "vwap",
+            "band_p1": "vwap_1u",
+            "band_m1": "vwap_1d",
+            "band_p2": "vwap_2u",
+            "band_m2": "vwap_2d",
+        }
+        for src, dst in mapping.items():
+            if src in bands.columns:
+                df1[dst] = bands[src]
+
+    # 4) 5-minute trend from resampled bars, then broadcast to 1m
     df5 = resample(df1, rule="5min")
-
-    # 4) 5m trend (HH/HL vs LH/LL) and broadcast to 1m
-    tr5 = trend_5m(df5)  # your current implementation returns a DataFrame
+    tr5 = trend_5m(df5)
 
     if isinstance(tr5, pd.DataFrame):
-        # Prefer explicit 'trend_5m' column, fall back to first column if not found
         if "trend_5m" in tr5.columns:
-            tr5 = tr5["trend_5m"]
+            trend_series = tr5["trend_5m"]
         else:
-            tr5 = tr5.iloc[:, 0]
+            trend_series = tr5.iloc[:, 0]
+    else:
+        # already a Series
+        trend_series = tr5
 
-    # Now tr5 is a Series indexed by the 5m timestamps
-    df1["trend_5m"] = tr5.reindex(df1.index, method="ffill").fillna(0)
+    df1["trend_5m"] = trend_series.reindex(df1.index, method="ffill").fillna(0)
 
-    # 5) 1m swings + micro swing breaks
+    # 5) 1-minute swings + micro-swing breaks
     swings_1m = find_swings_1m(df1)
     df1["swing_high"] = swings_1m["swing_high"]
     df1["swing_low"] = swings_1m["swing_low"]
 
-    micro = micro_swing_break(df1)
-    df1["micro_break_dir"] = micro["micro_break_dir"]
+    mb = micro_swing_break(df1)
+    df1["micro_break_dir"] = mb["micro_break_dir"]
 
     # 6) Generate signals + simulate trades
     signals = generate_signals(df1, df5, cfg)
@@ -60,8 +85,9 @@ def run_backtest(config_path: str, data_path: str) -> None:
     summary = compute_summary(trades)
     print("SUMMARY:", summary)
 
-    # Optional: save trades to CSV for inspection
+    # Optional: inspect trades
     # trades.to_csv("outputs/trades.csv", index=False)
+    trades.to_csv("outputs/trades_debug.csv", index=False)
 
 
 def run_walkforward(config_path: str, data_path: str) -> None:
@@ -72,7 +98,7 @@ def run_mc(config_path: str, trades_path: str) -> None:
     print("Monte Carlo runner placeholder.")
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: List[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="3A Backtester CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
