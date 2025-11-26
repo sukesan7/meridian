@@ -351,3 +351,60 @@ def test_trigger_ok_long_micro_break_inside_zone():
     trig_rows = out[out["trigger_ok"]]
     assert list(trig_rows.index) == [idx[7]]
     assert out.loc[idx[7], "direction"] == 1
+
+
+# --------------------------------------------
+# Test riskcap
+# --------------------------------------------
+def _make_idx():
+    return pd.date_range(
+        "2024-01-02 09:30", periods=5, freq="1min", tz="America/New_York"
+    )
+
+
+class _Cfg:
+    # 1-point tick so the math is easy in tests
+    tick_size = 1.0
+    risk_cap_multiple = 1.25
+    entry_window = type("EW", (), {"start": "09:35", "end": "11:00"})()
+
+
+def _base_df(or_high, or_low, close, lows):
+    idx = _make_idx()
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": lows,
+            "close": close,
+            "volume": 1,
+            "or_high": or_high,
+            "or_low": or_low,
+            "vwap": 100.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 90.0,
+            "vwap_2u": 120.0,
+            "vwap_2d": 80.0,
+            "trend_5m": 1.0,  # uptrend (long)
+            "swing_high": [False] * 5,
+            "swing_low": [True] + [False] * 4,  # swing low at first bar
+        },
+        index=idx,
+    )
+
+
+def test_riskcap_ok_when_stop_within_cap():
+    # OR height = 10 → cap = 1.25 * 10 = 12.5
+    # close = 110, swing low = 100, tick_size = 1 → stop = 99 → SL = 11 <= 12.5
+    df = _base_df(or_high=110.0, or_low=100.0, close=[110.0] * 5, lows=[100.0] * 5)
+    out = generate_signals(df, cfg=_Cfg)
+    assert out["riskcap_ok"].all()
+
+
+def test_riskcap_rejects_when_stop_too_far():
+    # OR height = 10 → cap = 12.5
+    # close = 110, swing low = 90, tick_size = 1 → stop = 89 → SL = 21 > 12.5
+    df = _base_df(or_high=110.0, or_low=100.0, close=[110.0] * 5, lows=[90.0] * 5)
+    out = generate_signals(df, cfg=_Cfg)
+    # At least one bar (the ones with valid swings) should be rejected.
+    assert not out["riskcap_ok"].all()
