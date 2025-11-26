@@ -146,16 +146,6 @@ threea-run run-backtest --config configs/base.yaml --data data/QQQ_1min_2025-04_
 python -m s3a_backtester.cli run-backtest --config configs/base.yaml --data data/QQQ_1min_2025-04_to_2025-10.csv
 ```
 
-In Week 1, the "backtest" is essentially a pipeline smoke test:
-- load 1-minute data,
-- RTH slice,
-- resample,
-- compute OR/VWAP/bands/ATR,
-- run a stub engine,
-- print a summary (currently zero trades, stats in R).
-
-Once the engine is implemented (Week 2+), this command will produce a full `trades.csv` and summary under `outputs/`.
-
 ---
 
 # Running Tests & Linting
