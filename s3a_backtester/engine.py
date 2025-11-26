@@ -39,7 +39,9 @@ _TRADE_COLS = [
 ]
 
 
+# ----------------------------------------------
 # Simluation for Trades
+# ----------------------------------------------
 def simulate_trades(
     df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config | None
 ) -> pd.DataFrame:
@@ -236,28 +238,46 @@ def simulate_trades(
     return trades
 
 
+# ----------------------------------------------
 # Signal Generation for 3A
+# ----------------------------------------------
 def generate_signals(
     df_1m: pd.DataFrame,
     df_5m: pd.DataFrame | None = None,
     cfg: Any | None = None,
 ) -> pd.DataFrame:
+    """
+    Core 3A signal engine.
+
+    Works in two modes:
+    - Stub mode: if OR/VWAP/trend columns are missing, just ensure the standard
+      signal columns exist and return.
+    - Full mode: when all required feature columns are present, compute
+      unlock / zone / trigger / risk-cap flags in the way the tests expect.
+    """
     out = df_1m.copy()
 
-    # Ensure that the standard signal columns exist
-    for col, default in [
-        ("time_window_ok", True),
-        ("or_break_unlock", False),
-        ("in_zone", False),
-        ("trigger_ok", True),
-        ("disqualified_2sigma", False),
-        ("disqualified_±2σ", False),
-        ("riskcap_ok", True),
-        ("direction", 0),  # +1 long, -1 short, 0 none
-    ]:
+    # ------------------------------------------------------------------
+    # Standard columns (for both stub & full modes)
+    # ------------------------------------------------------------------
+    std_defaults: dict[str, object] = {
+        "time_window_ok": True,
+        "or_break_unlock": False,
+        "in_zone": False,
+        "trigger_ok": False,
+        "disqualified_±2σ": False,
+        "disqualified_2sigma": False,
+        "riskcap_ok": True,
+        "direction": 0,
+        "stop_price": np.nan,
+    }
+    for col, val in std_defaults.items():
         if col not in out:
-            out[col] = default
+            out[col] = val
 
+    # ------------------------------------------------------------------
+    # Decide whether we have enough columns for FULL logic
+    # ------------------------------------------------------------------
     required = {
         "close",
         "or_high",
@@ -269,249 +289,241 @@ def generate_signals(
         "vwap_2d",
         "trend_5m",
     }
-
-    # Stub path: basic shape only, no feature logic
     if not required.issubset(out.columns):
+        # Stub path: just return with the standard columns present.
         return out
 
-    # ---------------------------------------------------------------
-    # Index into dates + time_window_ok (acceptable condition for 3A)
-    # Convert index to ET, pulling dates and clock times
-    # ---------------------------------------------------------------
+    close = out["close"].astype(float)
+    orh = out["or_high"].astype(float)
+    orl = out["or_low"].astype(float)
+    vwap = out["vwap"].astype(float)
+    v1u = out["vwap_1u"].astype(float)
+    v1d = out["vwap_1d"].astype(float)
+    v2u = out["vwap_2u"].astype(float)
+    v2d = out["vwap_2d"].astype(float)
+    trend = out["trend_5m"].astype(float)
+
+    # ------------------------------------------------------------------
+    # 1) Time window (entry_window from cfg, or all True if no cfg)
+    # ------------------------------------------------------------------
     idx = out.index
     if getattr(idx, "tz", None) is not None:
         idx_et = idx.tz_convert("America/New_York")
     else:
         idx_et = idx
 
-    dates = pd.Index(idx_et.date, name="date")
     times = idx_et.time
+    dates = pd.Index(idx_et.date, name="date")
 
     ew = getattr(cfg, "entry_window", None) if cfg is not None else None
-
     if ew is None:
-        # No explicit entry window (unit tests), then all bars are allowed
-        time_window = pd.Series(True, index=out.index)
-    # create the actual 3A entry window
+        # Tests without cfg expect all bars to be time_window_ok == True
+        time_ok = pd.Series(True, index=out.index)
     else:
         start_str = getattr(ew, "start", "09:35")
         end_str = getattr(ew, "end", "11:00")
         start_time = pd.Timestamp(start_str).time()
         end_time = pd.Timestamp(end_str).time()
         mask = (times >= start_time) & (times <= end_time)
-        time_window = pd.Series(mask, index=out.index)
+        time_ok = pd.Series(mask, index=out.index)
 
-    out["time_window_ok"] = time_window
+    out["time_window_ok"] = time_ok
 
-    # ---------------------------------------------------------------
-    # Direction & Unlock Logic
-    # ---------------------------------------------------------------
-    # figure out if we are in an uptrend or a downtrend for 5 min
-    is_long_trend = out["trend_5m"] > 0
-    is_short_trend = out["trend_5m"] < 0
+    # ------------------------------------------------------------------
+    # 2) Direction (sign of trend) + OR break unlock
+    # ------------------------------------------------------------------
+    is_long_trend = trend > 0
+    is_short_trend = trend < 0
 
-    out.loc[is_long_trend, "direction"] = 1
-    out.loc[is_short_trend, "direction"] = -1
+    direction = np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0)).astype(
+        "int8"
+    )
+    out["direction"] = direction
+    dir_series = out["direction"]
 
-    breaks_or_long = out["close"] > out["or_high"]
-    breaks_or_short = out["close"] < out["or_low"]
+    breaks_long = close > orh
+    breaks_short = close < orl
+    above_vwap = close >= vwap
+    below_vwap = close <= vwap
 
-    above_vwap = out["close"] >= out["vwap"]
-    below_vwap = out["close"] <= out["vwap"]
+    long_unlock_raw = is_long_trend & breaks_long & above_vwap & time_ok
+    short_unlock_raw = is_short_trend & breaks_short & below_vwap & time_ok
+    unlock_raw = long_unlock_raw | short_unlock_raw
 
-    # inside window, 5-min trend upward, 1 min close > OR_high, and close >= VWAP (correct side)
-    unlock_long = time_window & is_long_trend & breaks_or_long & above_vwap
+    unlock_count = pd.Series(unlock_raw, index=out.index).groupby(dates).cumsum()
+    out["or_break_unlock"] = unlock_count.eq(1)
 
-    # inside window, 5-min trend downward, 1 min close < OR_low, and close <= VWAP (correct side)
-    unlock_short = time_window & is_short_trend & breaks_or_short & below_vwap
-
-    # combined
-    unlock_raw = unlock_long | unlock_short
-
-    # First unlock per session is real unlock
-    unlock_order = unlock_raw.groupby(dates).cumsum()
-    unlock_first = unlock_order.eq(1)
-    out["or_break_unlock"] = unlock_first
-
-    # ---------------------------------------------------------------
-    # Opposite 2 sigma disqualifier (cumulative per day)
-    # ---------------------------------------------------------------
-    hit_opp_long = is_long_trend & (out["close"] <= out["vwap_2d"])
-    hit_opp_short = is_short_trend & (out["close"] >= out["vwap_2u"])
+    # ------------------------------------------------------------------
+    # 3) Opposite 2σ disqualifier (cumulative per day)
+    # ------------------------------------------------------------------
+    hit_opp_long = is_long_trend & (close <= v2d)  # long trend → watch lower band
+    hit_opp_short = is_short_trend & (close >= v2u)  # short trend → watch upper band
     hit_opp = hit_opp_long | hit_opp_short
 
-    disq = hit_opp.groupby(dates).cumsum().astype(bool)
+    disq = pd.Series(hit_opp, index=out.index).groupby(dates).cumsum().astype(bool)
 
-    # Accept both σ and `sigma` labels
     out["disqualified_2sigma"] = disq
     out["disqualified_±2σ"] = disq
 
-    # ---------------------------------------------------------------
-    # Zone logic – first pullback into VWAP / +- 1 sigma after unlock
-    # ---------------------------------------------------------------
-    out["in_zone"] = False
+    # ------------------------------------------------------------------
+    # 4) Zone: first pullback into VWAP±1σ after unlock, if not disqualified
+    # ------------------------------------------------------------------
+    in_zone = pd.Series(False, index=out.index)
 
-    for date_val, grp in out.groupby(dates):
-        # If there is no unlock, skip the session
-        unlock_bars = grp.index[grp["or_break_unlock"]]
-        if len(unlock_bars) == 0:
+    for day_key, day in out.groupby(dates):
+        unlock_mask = day["or_break_unlock"].astype(bool)
+        if not unlock_mask.any():
             continue
 
-        # First unlock bar for the session
-        unlock_ts = unlock_bars[0]
-        dir_val = grp.loc[unlock_ts, "direction"]
+        # If session is disqualified at any point, no zone is ever marked.
+        if day["disqualified_2sigma"].any():
+            continue
 
-        # Only look after the unlock bar
-        after = grp.loc[grp.index > unlock_ts]
+        unlock_ts = unlock_mask[unlock_mask].index[0]
+        dir_val = int(day.loc[unlock_ts, "direction"])
+        if dir_val == 0:
+            continue
+
+        after = day.loc[day.index > unlock_ts]
         if after.empty:
             continue
 
-        if dir_val == 1:
-            # Long: pullback down into [VWAP, +1 sigma]
-            zone_mask = (
-                (after["close"] >= after["vwap"])
-                & (after["close"] <= after["vwap_1u"])
-                & after["time_window_ok"]
-                & (~after["disqualified_2sigma"])
-            )
-        elif dir_val == -1:
-            # Short: pullback up into [-1 sigma, VWAP]
-            zone_mask = (
-                (after["close"] <= after["vwap"])
-                & (after["close"] >= after["vwap_1d"])
-                & after["time_window_ok"]
-                & (~after["disqualified_2sigma"])
+        if dir_val > 0:
+            zone_mask = (after["close"] >= after["vwap"]) & (
+                after["close"] <= after["vwap_1u"]
             )
         else:
+            zone_mask = (after["close"] <= after["vwap"]) & (
+                after["close"] >= after["vwap_1d"]
+            )
+
+        if not zone_mask.any():
             continue
 
-        candidates = after[zone_mask]
-        if not candidates.empty:
-            zone_ts = candidates.index[0]  # first zone bar of the day
-            out.loc[zone_ts, "in_zone"] = True  # mark exactly one bar
+        zone_ts = zone_mask[zone_mask].index[0]
+        in_zone.loc[zone_ts] = True
+
+    out["in_zone"] = in_zone
 
     # ------------------------------------------------------------------
-    # Trigger logic: engulf or micro-swing break near the zone
+    # 5) Trigger logic: engulf or micro-swing break at / near the zone
     # ------------------------------------------------------------------
-    # Ensure column exists even if inputs are missing these features
-    if "trigger_ok" not in out:
-        out["trigger_ok"] = False
+    direction = out["direction"].astype("int8")
 
-    # Direction: 1 for long, -1 for short
-    if "direction" not in out:
-        out["direction"] = np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0))
+    # Pattern signals (use Series defaults, not scalars)
+    if "micro_break_dir" in out.columns:
+        micro_raw = out["micro_break_dir"]
+    else:
+        micro_raw = pd.Series(0, index=out.index)
 
-    # Pattern signals from structure.micro_swing_break
-    micro_dir = out["micro_break_dir"].astype("int8") if "micro_break_dir" in out else 0
-    engulf_dir = out["engulf_dir"].astype("int8") if "engulf_dir" in out else 0
+    if "engulf_dir" in out.columns:
+        engulf_raw = out["engulf_dir"]
+    else:
+        engulf_raw = pd.Series(0, index=out.index)
 
-    # Any pattern in the *trend* direction
-    long_pattern = (micro_dir > 0) | (engulf_dir > 0)
-    short_pattern = (micro_dir < 0) | (engulf_dir < 0)
+    micro_dir = pd.to_numeric(micro_raw, errors="coerce").fillna(0).astype("int8")
+    engulf_dir = pd.to_numeric(engulf_raw, errors="coerce").fillna(0).astype("int8")
 
-    # Tick size (used for the "≤ 1 tick beyond zone" rule)
+    # Once zone has been touched in a session, we are "armed"
+    # `dates` is the ET date index we built earlier.
+    zone_seen = out["in_zone"].astype(bool).groupby(dates).cummax()
+
+    # Tick size for the "≤ 1 tick beyond band" rule
     tick_size = 1.0
     if cfg is not None:
         inst = getattr(cfg, "instrument", None)
-        tick_size = getattr(inst, "tick_size", tick_size)
+        tick_size = getattr(inst, "tick_size", tick_size) or tick_size
 
-    close = out["close"]
+    close = out["close"].astype(float)
+    vwap = out["vwap"].astype(float)
+    v1u = out["vwap_1u"].astype(float)
+    v1d = out["vwap_1d"].astype(float)
 
-    # Price near the long zone: inside [VWAP, +1σ] or up to 1 tick above +1σ
-    long_zone_core = (close >= out["vwap"]) & (close <= out["vwap_1u"])
-    long_zone_plus = (close > out["vwap_1u"]) & (close <= out["vwap_1u"] + tick_size)
-    long_zone_ok = long_zone_core | long_zone_plus
+    # Long side: inside [VWAP, +1σ] OR up to 1 tick above +1σ
+    long_core = (direction > 0) & zone_seen & (close >= vwap) & (close <= v1u)
+    long_plus = (direction > 0) & zone_seen & (close > v1u) & (close <= v1u + tick_size)
+    long_near_zone = long_core | long_plus
 
-    # Price near the short zone: inside [VWAP, -1σ] or up to 1 tick below -1σ
-    short_zone_core = (close <= out["vwap"]) & (close >= out["vwap_1d"])
-    short_zone_plus = (close < out["vwap_1d"]) & (close >= out["vwap_1d"] - tick_size)
-    short_zone_ok = short_zone_core | short_zone_plus
+    # Short side: inside [VWAP, -1σ] OR up to 1 tick below -1σ
+    short_core = (direction < 0) & zone_seen & (close <= vwap) & (close >= v1d)
+    short_plus = (
+        (direction < 0) & zone_seen & (close < v1d) & (close >= v1d - tick_size)
+    )
+    short_near_zone = short_core | short_plus
 
-    # trigger for longs
+    # Pattern must be in trade direction
+    long_pattern = (micro_dir > 0) | (engulf_dir > 0)
+    short_pattern = (micro_dir < 0) | (engulf_dir < 0)
+
     long_trig = (
-        (out["direction"] == 1)
+        (direction > 0)
         & long_pattern
-        & long_zone_ok
-        & out["time_window_ok"]
-        & ~out["disqualified_2sigma"]
+        & long_near_zone
+        & out["time_window_ok"].astype(bool)
+        & ~out["disqualified_2sigma"].astype(bool)
     )
 
-    # trigger for shorts
     short_trig = (
-        (out["direction"] == -1)
+        (direction < 0)
         & short_pattern
-        & short_zone_ok
-        & out["time_window_ok"]
-        & ~out["disqualified_2sigma"]
+        & short_near_zone
+        & out["time_window_ok"].astype(bool)
+        & ~out["disqualified_2sigma"].astype(bool)
     )
 
     out["trigger_ok"] = long_trig | short_trig
 
     # ------------------------------------------------------------------
-    # Pre-entry: stop_price + riskcap_ok
+    # 6) Risk cap + stop_price (based on last swing)
     # ------------------------------------------------------------------
-    # Defaults so older tests / minimal DataFrames don’t break.
-    if "riskcap_ok" not in out:
-        out["riskcap_ok"] = True
-    if "stop_price" not in out:
-        out["stop_price"] = np.nan
-
-    needed = {"high", "low", "close", "or_high", "or_low", "swing_high", "swing_low"}
-    if not needed.issubset(out.columns):
-        # We don't have swing info or OR levels yet → nothing to do.
-        return out
-
-    # Latest swing highs/lows (1-min) carried forward per bar.
-    last_swing_high = out["high"].where(out["swing_high"]).ffill()
-    last_swing_low = out["low"].where(out["swing_low"]).ffill()
-
-    # Direction for risk logic: use sign of 5-min trend.
-    trend_sign = np.sign(out["trend_5m"].fillna(0.0))
-    is_long = trend_sign > 0
-    is_short = trend_sign < 0
-
-    # Invalidation swing price: last swing low for longs, last swing high for shorts.
-    invalidation = np.where(
-        is_long,
-        last_swing_low,
-        np.where(is_short, last_swing_high, np.nan),
-    )
-
-    # Tick size: try to pull from cfg, otherwise fall back to a reasonable default.
-    tick_size = 0.25  # sensible default for NQ/ES
+    tick_size = 0.25
+    cap_mult = 1.25
     if cfg is not None:
-        # Allow either cfg.tick_size or cfg.instrument.tick_size style configs.
-        tick_size = getattr(cfg, "tick_size", tick_size)
-        instr = getattr(cfg, "instrument", None)
-        if instr is not None:
-            tick_size = getattr(instr, "tick_size", tick_size)
+        tick_size = getattr(cfg, "tick_size", tick_size) or tick_size
+        cap_mult = getattr(cfg, "risk_cap_multiple", cap_mult) or cap_mult
+    tick_size = float(tick_size)
 
-    # Stop price: 1 tick beyond invalidation swing.
-    stop_price = np.where(
-        is_long,
-        invalidation - tick_size,
-        np.where(is_short, invalidation + tick_size, np.nan),
+    or_height = (orh - orl).abs()
+    max_sl_dist = or_height * cap_mult
+
+    swing_low_flag = (
+        out["swing_low"].astype(bool)
+        if "swing_low" in out.columns
+        else pd.Series(False, index=out.index)
     )
+    swing_high_flag = (
+        out["swing_high"].astype(bool)
+        if "swing_high" in out.columns
+        else pd.Series(False, index=out.index)
+    )
+
+    last_swing_low = (
+        out["low"].where(swing_low_flag).ffill()
+        if "low" in out.columns
+        else pd.Series(np.nan, index=out.index)
+    )
+    last_swing_high = (
+        out["high"].where(swing_high_flag).ffill()
+        if "high" in out.columns
+        else pd.Series(np.nan, index=out.index)
+    )
+
+    stop_price = pd.Series(np.nan, index=out.index, dtype="float64")
+    long_mask = dir_series > 0
+    short_mask = dir_series < 0
+
+    # Long: 1 tick below last swing low
+    stop_price[long_mask] = last_swing_low[long_mask] - tick_size
+    # Short: 1 tick above last swing high
+    stop_price[short_mask] = last_swing_high[short_mask] + tick_size
     out["stop_price"] = stop_price
 
-    # OR height per session (same all day, but computed per-bar for convenience).
-    or_height = (out["or_high"] - out["or_low"]).groupby(dates).transform("first")
+    sl_dist = pd.Series(np.nan, index=out.index, dtype="float64")
+    sl_dist[long_mask] = close[long_mask] - stop_price[long_mask]
+    sl_dist[short_mask] = stop_price[short_mask] - close[short_mask]
 
-    # Risk-cap multiple: how many OR-heights we allow for SL distance.
-    risk_cap_multiple = 1.25
-    if cfg is not None:
-        risk_cap_multiple = getattr(cfg, "risk_cap_multiple", risk_cap_multiple)
-
-    # Stop-loss distance in price terms.
-    sl_dist = (out["close"] - out["stop_price"]).abs()
-
-    # Only evaluate riskcap where we have a trend, swings, and a defined stop.
-    candidate = is_long | is_short
-    candidate &= sl_dist.notna() & or_height.notna()
-
-    # Default: everything is OK. We only flip to False where we exceed the cap.
-    out["riskcap_ok"] = True
-    too_wide = sl_dist > (risk_cap_multiple * or_height)
-    out.loc[candidate & too_wide, "riskcap_ok"] = False
+    # If stop_price is NaN, keep riskcap_ok == True (we don't have a valid stop yet)
+    riskcap_ok = (~sl_dist.notna()) | (sl_dist <= max_sl_dist)
+    out["riskcap_ok"] = riskcap_ok
 
     return out
