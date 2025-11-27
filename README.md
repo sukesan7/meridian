@@ -71,7 +71,7 @@ The backtester’s job is to encode these rules exactly and test them over 12–
 
 ---
 
-## Repository layout
+## Repository Layout
 
 ```text
 3a-backtester/
@@ -258,7 +258,7 @@ The repo is developed via **feature branches + pull requests**:
    git push -u origin feat/<short-feature-name>
    ```
 
-5. Open a PR on GitHub.  
+5. Open a PR on GitHub.
    CI must be green before merging. `main` is protected. Merges are done via **“Squash and Merge”** to keep history clean.
 
 ---
