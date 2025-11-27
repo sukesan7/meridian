@@ -4,7 +4,9 @@ import pandas as pd
 from s3a_backtester.structure import trend_5m, Trend5mConfig, micro_swing_break
 
 
-# --------- create day test ------------
+# -----------------------------------
+# Test simple day creation
+# -----------------------------------
 def _make_simple_day(direction: str = "up") -> pd.DataFrame:
     idx = pd.date_range(
         "2024-01-02 09:30",
@@ -34,7 +36,9 @@ def _make_simple_day(direction: str = "up") -> pd.DataFrame:
     return df
 
 
-# --------- 5-minute trend------------
+# -----------------------------------
+# Test 5 min trend
+# -----------------------------------
 def test_trend_5m_uptrend_basic():
     df = _make_simple_day("up")
     cfg = Trend5mConfig(lookback=3)
@@ -60,7 +64,9 @@ def test_trend_5m_downtrend_basic():
     assert out["trend_vwap_ok"].iloc[-1]
 
 
-# --------- 1-minute micro swing break ------------
+# -----------------------------------
+# Test 1 minute micro swing break
+# -----------------------------------
 def _make_1min_index(n: int = 10) -> pd.DatetimeIndex:
     return pd.date_range(
         "2024-01-02 09:30",

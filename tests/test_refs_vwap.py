@@ -4,6 +4,9 @@ from s3a_backtester.features import compute_session_refs, compute_session_vwap_b
 from tests.utils import make_minute_ohlcv
 
 
+# -----------------------------------
+# Test refs and vwap
+# -----------------------------------
 def test_refs_and_vwap(tmp_path):
     _, csv_df = make_minute_ohlcv()
     p = tmp_path / "toy.csv"
