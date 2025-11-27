@@ -102,10 +102,6 @@ The backtester’s job is to encode these rules exactly and test them over 12–
   outputs/
     .gitkeep                    # Backtest outputs (trades, summaries) – not tracked
 
-  scripts/
-    convert_databento_to_parquet.py  # Helper to normalize Databento CSVs to Parquet
-    debug_signals_qqq.py        # Dev helper to inspect 3A signals on QQQ
-
   s3a_backtester/
     __init__.py
     cli.py                      # CLI entrypoint (run-backtest / run-walkforward / run-mc)
