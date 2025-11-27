@@ -11,6 +11,9 @@ from s3a_backtester.features import (
 )
 
 
+# -----------------------------------
+# Test Import and Shapes
+# -----------------------------------
 def test_features_import_and_shapes():
     idx = pd.date_range(
         "2024-01-02 09:30", periods=10, freq="1min", tz="America/New_York"
@@ -33,6 +36,9 @@ def test_features_import_and_shapes():
     assert atr.name == "atr15" and len(atr) == len(df)
 
 
+# -----------------------------------
+# Test computing ATR15's basic shape and values
+# -----------------------------------
 def test_compute_atr15_basic_shape_and_values():
     idx = pd.date_range(
         "2024-01-02 09:30",
@@ -66,6 +72,9 @@ def test_compute_atr15_basic_shape_and_values():
     assert atr.iloc[-1] == pytest.approx(1.0, rel=1e-6)
 
 
+# -----------------------------------
+# Test swing 1m basics
+# -----------------------------------
 def test_find_swings_1m_basic():
     idx = pd.date_range(
         "2024-01-02 09:30",

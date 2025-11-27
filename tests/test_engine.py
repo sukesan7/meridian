@@ -307,7 +307,7 @@ def test_generate_signals_zone_blocked_if_disqualified():
 
 
 # --------------------------------------------
-# Test trigger
+# Test trigger – micro-swing + engulf, long & short
 # --------------------------------------------
 def _make_simple_day_index():
     return pd.date_range(
@@ -315,13 +315,14 @@ def _make_simple_day_index():
     )
 
 
-def test_trigger_ok_long_micro_break_inside_zone():
+def test_trigger_ok_long_engulf_inside_zone():
+    """Long: engulf-only trigger fires at the first in-zone bar."""
     idx = _make_simple_day_index()
 
     # Prices: OR 100–110, VWAP 105, zone [105, 110]
     close = [104.0] * len(idx)
     close[5] = 111.0  # 09:35 unlock (close > ORH)
-    close[7] = 108.0  # 09:37: in zone and micro-break up
+    close[7] = 108.0  # 09:37: in zone
 
     df = pd.DataFrame(
         {
@@ -337,20 +338,97 @@ def test_trigger_ok_long_micro_break_inside_zone():
             "vwap_1d": 100.0,
             "vwap_2u": 115.0,
             "vwap_2d": 95.0,
-            "trend_5m": 1,
-            # micro_swing_break output: mark a +1 break at 09:37
+            "trend_5m": 1,  # uptrend → long bias
             "micro_break_dir": [0] * len(idx),
             "engulf_dir": [0] * len(idx),
         },
         index=idx,
     )
-    df.loc[idx[7], "micro_break_dir"] = 1
+    # No micro-break, just an engulf in the long direction at the zone bar
+    df.loc[idx[7], "engulf_dir"] = 1
 
     out = generate_signals(df)
 
     trig_rows = out[out["trigger_ok"]]
     assert list(trig_rows.index) == [idx[7]]
     assert out.loc[idx[7], "direction"] == 1
+
+
+def test_trigger_ok_short_micro_break_inside_zone():
+    """Short: micro-swing break trigger fires at first in-zone bar below VWAP."""
+    idx = _make_simple_day_index()
+
+    # OR 100–110, VWAP 105, short zone [vwap_1d, vwap] = [100, 105]
+    close = [104.0] * len(idx)
+    close[5] = 99.0  # 09:35 unlock short (close < ORL=100)
+    close[7] = 102.0  # 09:37: inside short zone [100, 105]
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 100.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": -1,  # downtrend → short bias
+            "micro_break_dir": [0] * len(idx),
+            "engulf_dir": [0] * len(idx),
+        },
+        index=idx,
+    )
+    # Micro-swing break in the short direction at the zone bar
+    df.loc[idx[7], "micro_break_dir"] = -1
+
+    out = generate_signals(df)
+
+    trig_rows = out[out["trigger_ok"]]
+    assert list(trig_rows.index) == [idx[7]]
+    assert out.loc[idx[7], "direction"] == -1
+
+
+def test_trigger_ok_short_engulf_inside_zone():
+    """Short: engulf-only trigger fires at first in-zone bar."""
+    idx = _make_simple_day_index()
+
+    close = [104.0] * len(idx)
+    close[5] = 99.0  # 09:35 unlock short
+    close[7] = 102.0  # 09:37: in short zone
+
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1,
+            "or_high": 110.0,
+            "or_low": 100.0,
+            "vwap": 105.0,
+            "vwap_1u": 110.0,
+            "vwap_1d": 100.0,
+            "vwap_2u": 115.0,
+            "vwap_2d": 95.0,
+            "trend_5m": -1,  # short bias
+            "micro_break_dir": [0] * len(idx),
+            "engulf_dir": [0] * len(idx),
+        },
+        index=idx,
+    )
+    # No micro-break, just an engulf in the short direction at the zone bar
+    df.loc[idx[7], "engulf_dir"] = -1
+
+    out = generate_signals(df)
+
+    trig_rows = out[out["trigger_ok"]]
+    assert list(trig_rows.index) == [idx[7]]
+    assert out.loc[idx[7], "direction"] == -1
 
 
 # --------------------------------------------

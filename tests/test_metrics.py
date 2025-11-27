@@ -2,6 +2,9 @@ from s3a_backtester.metrics import compute_summary, equity_curve_R, max_drawdown
 import pandas as pd
 
 
+# -----------------------------------
+# Test metrics when data is empty
+# -----------------------------------
 def test_metrics_empty_safe():
     trades = pd.DataFrame()
     s = compute_summary(trades)

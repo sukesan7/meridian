@@ -4,6 +4,9 @@ from tests.utils import make_minute_ohlcv
 import pandas as pd
 
 
+# -----------------------------------
+# Smoke test for IO RTH resampling
+# -----------------------------------
 def test_io_rth_resample_smoke(tmp_path):
     _, csv_df = make_minute_ohlcv()
     p = tmp_path / "toy.csv"
@@ -23,6 +26,9 @@ def test_io_rth_resample_smoke(tmp_path):
     assert df5.index[0].minute % 5 == 0
 
 
+# -----------------------------------
+# Test 30 min alignment resampling with no peek
+# -----------------------------------
 def test_resample_30min_alignment_no_peek():
     """30min resample should align to clock and not peek into future bars.
 
@@ -72,6 +78,9 @@ def test_resample_30min_alignment_no_peek():
     assert df30["high"].is_monotonic_increasing
 
 
+# -----------------------------------
+# Test daylight savings consistency for RTH slicing
+# -----------------------------------
 def test_slice_rth_consistent_across_dst(tmp_path):
     """
     RTH slice (09:30–16:00 ET) should give 391 bars both before and after
