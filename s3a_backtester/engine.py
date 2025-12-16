@@ -4,8 +4,10 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 from typing import Any
+from datetime import date
 from .config import Config
 from .slippage import apply_slippage
+from .management import manage_trade_lifecycle
 
 _SIGNAL_COLS = [
     "time_window_ok",
@@ -46,7 +48,7 @@ def simulate_trades(
     df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config | None
 ) -> pd.DataFrame:
     """
-    Entry-only simulation for 3A.
+    Simulate 3A trades, including entry, management, and exits.
 
     We assume `signals` is the 1-minute DataFrame returned by `generate_signals`,
     i.e. it already contains OHLCV plus:
@@ -64,6 +66,9 @@ def simulate_trades(
         - filters valid entry bars
         - applies slippage on entry using `apply_slippage`
         - computes R distance and TP1/TP2
+        - if management config is present, runs full lifecycle:
+            TP1 scale-out, BE move, TP2, time-stop,
+            and writes realized_R / exit_time.
         - returns a normalized trade log DataFrame.
     """
     # Work off the signals frame; df1 is kept for signature compatibility.
@@ -87,6 +92,9 @@ def simulate_trades(
         "vwap_1d": np.nan,
         "micro_break_dir": 0,
         "engulf_dir": 0,
+        # optional daily refs
+        "pdh": np.nan,
+        "pdl": np.nan,
     }
     for col, val in defaults.items():
         if col not in df:
@@ -110,14 +118,23 @@ def simulate_trades(
 
     # Tick size resolution
     tick_size = 0.25  # sensible default for NQ/ES
+    mgmt_cfg = None
+    time_cfg = None
     if cfg is not None:
         tick_size = getattr(cfg, "tick_size", tick_size)
         inst = getattr(cfg, "instrument", None)
         if inst is not None:
             tick_size = getattr(inst, "tick_size", tick_size)
+        mgmt_cfg = getattr(cfg, "management", None)
+        time_cfg = getattr(cfg, "time_stop", None)
+
     tick_size = float(tick_size) if tick_size else 0.25
+    use_management = mgmt_cfg is not None and time_cfg is not None
 
     records: list[dict[str, object]] = []
+
+    # Cache per-session views so we don't slice df on every trade.
+    session_cache: dict[date, pd.DataFrame] = {}
 
     for ts, row in entries.iterrows():
         dir_val = int(row["direction"])
@@ -125,6 +142,7 @@ def simulate_trades(
             continue
 
         side = "long" if dir_val > 0 else "short"
+        side_sign = 1 if dir_val > 0 else -1
 
         raw_price = float(row["close"])
         stop = float(row["stop_price"]) if pd.notna(row["stop_price"]) else np.nan
@@ -143,11 +161,6 @@ def simulate_trades(
         # Planned R per trade (in R-space; sizing is a later concern)
         risk_R = 1.0
 
-        # TP1 / TP2 in price terms
-        direction_sign = 1.0 if dir_val > 0 else -1.0
-        tp1 = entry_price + direction_sign * risk_per_unit * 1.0
-        tp2 = entry_price + direction_sign * risk_per_unit * 2.0
-
         # OR height for logging
         or_high = float(row.get("or_high", np.nan))
         or_low = float(row.get("or_low", np.nan))
@@ -162,7 +175,6 @@ def simulate_trades(
         slip_ticks = 0.0
         if tick_size > 0:
             slip_ticks = (entry_price - raw_price) / tick_size
-            # could also take abs() if you want strictly non-negative
 
         # Trigger type heuristic
         micro_dir = int(row.get("micro_break_dir", 0) or 0)
@@ -189,7 +201,6 @@ def simulate_trades(
             if dir_val > 0:
                 # Long: VWAP / +1σ zone
                 if np.isfinite(v1u) and vwap <= price <= v1u:
-                    # choose label by proximity
                     location = (
                         "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1σ"
                     )
@@ -200,27 +211,87 @@ def simulate_trades(
                         "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1σ"
                     )
 
+        # ---- Management & exits ----
+        exit_time = pd.NaT
+        realized_R = 0.0
+        tp1_price = entry_price + side_sign * risk_per_unit * 1.0
+        tp2_price = entry_price + side_sign * risk_per_unit * 2.0
+        t_to_tp1_min = np.nan
+        time_stop_reason = "none"
+
+        if use_management:
+            trade_date = ts.date()
+            if trade_date not in session_cache:
+                # Session-scoped slice: all bars for that trading day
+                mask_session = df.index.date == trade_date
+                session_cache[trade_date] = df.loc[mask_session]
+
+            session_df = session_cache[trade_date]
+            # locate entry within that session
+            try:
+                entry_idx = session_df.index.get_loc(ts)
+            except KeyError:
+                # Shouldn't happen if signals are consistent, but be defensive
+                entry_idx = 0
+
+            # build refs for TP2
+            pdh = float(row.get("pdh", np.nan))
+            pdl = float(row.get("pdl", np.nan))
+            refs = {
+                "pdh": pdh if np.isfinite(pdh) else None,
+                "pdl": pdl if np.isfinite(pdl) else None,
+                "or_height": or_height if np.isfinite(or_height) else None,
+            }
+
+            lifecycle = manage_trade_lifecycle(
+                bars=session_df,
+                entry_idx=entry_idx,
+                side=side_sign,
+                entry_price=float(entry_price),
+                stop_price=float(stop),
+                mgmt_cfg=mgmt_cfg,
+                time_cfg=time_cfg,
+                refs=refs,
+                # For now we don't wire VWAP/trend/sigma/DD booleans;
+                # passing None means "always OK" inside run_time_stop.
+            )
+
+            exit_time = lifecycle["exit_time"]
+            realized_R = float(lifecycle["realized_R"])
+            tp1_price = float(lifecycle["tp1_price"])
+            tp2_price = (
+                float(lifecycle["tp2_price"])
+                if lifecycle["tp2_price"] is not None
+                else tp2_price
+            )
+            t_to_tp1_min = (
+                float(lifecycle["t_to_tp1_min"])
+                if lifecycle["t_to_tp1_min"] is not None
+                else np.nan
+            )
+            time_stop_reason = lifecycle["time_stop_reason"] or "none"
+
         records.append(
             {
                 "date": ts.date(),
                 "entry_time": ts,
-                "exit_time": pd.NaT,  # exits/time stops come later
+                "exit_time": exit_time,
                 "side": side,
                 "entry": float(entry_price),
                 "stop": float(stop),
-                "tp1": float(tp1),
-                "tp2": float(tp2),
+                "tp1": float(tp1_price),
+                "tp2": float(tp2_price),
                 "or_height": float(or_height) if np.isfinite(or_height) else np.nan,
                 "sl_ticks": float(sl_ticks) if np.isfinite(sl_ticks) else np.nan,
                 "risk_R": float(risk_R),
-                "realized_R": 0.0,  # populated once exits are implemented
-                "t_to_tp1_min": np.nan,
+                "realized_R": float(realized_R),
+                "t_to_tp1_min": t_to_tp1_min,
                 "trigger_type": trigger_type,
                 "location": location,
-                "time_stop": "none",
+                "time_stop": time_stop_reason,
                 "disqualifier": "none",
                 "slippage_entry_ticks": float(slip_ticks),
-                "slippage_exit_ticks": 0.0,
+                "slippage_exit_ticks": 0.0,  # exit slippage model can be added later
             }
         )
 
