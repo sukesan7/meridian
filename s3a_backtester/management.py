@@ -358,3 +358,283 @@ def run_time_stop(
 
     # Session ended before hard_deadline or any condition break.
     return TimeStopResult(idx=None, time=None, reason=None)
+
+
+def _first_stop_idx(
+    high: pd.Series,
+    low: pd.Series,
+    stop_price: float,
+    side: int,
+    start_idx: int,
+) -> Optional[int]:
+    """
+    First time the original stop is hit AFTER start_idx.
+
+    For longs (side=+1): low <= stop_price.
+    For shorts (side=-1): high >= stop_price.
+    """
+    if side not in (1, -1):
+        raise ValueError(f"side must be +1 or -1, got {side!r}")
+
+    if start_idx >= len(high) - 1:
+        return None
+
+    if side == 1:
+        mask = low.iloc[start_idx + 1 :] <= stop_price
+    else:
+        mask = high.iloc[start_idx + 1 :] >= stop_price
+
+    if not mask.any():
+        return None
+
+    rel = np.flatnonzero(mask.to_numpy())
+    if len(rel) == 0:
+        return None
+
+    return start_idx + 1 + int(rel[0])
+
+
+def manage_trade_lifecycle(
+    bars: pd.DataFrame,
+    entry_idx: int,
+    side: int,
+    entry_price: float,
+    stop_price: float,
+    mgmt_cfg: MgmtCfg,
+    time_cfg: TimeStopCfg,
+    refs: Mapping[str, float],
+    vwap_side_ok: Optional[pd.Series] = None,
+    trend_ok: Optional[pd.Series] = None,
+    sigma_ok: Optional[pd.Series] = None,
+    dd_ok: Optional[pd.Series] = None,
+) -> dict:
+    """
+    Full lifecycle for a single trade:
+
+      - Compute TP1 hit + BE move.
+      - Compute TP2 hit.
+      - Compute time-stop index.
+      - Compute original-stop / post-TP1 stop hits.
+      - Combine into final exit, with scaling at TP1.
+
+    Returns a dict with keys:
+
+      - exit_idx: int
+      - exit_time: Timestamp
+      - exit_price: float
+      - realized_R: float
+      - tp1_price: float
+      - tp2_price: Optional[float]
+      - t_to_tp1_min: Optional[float]
+      - time_stop_reason: str
+      - tp2_label: Optional[str]
+    """
+    high = bars["high"]
+    low = bars["low"]
+    idx = bars.index
+
+    risk_per_unit = float(abs(entry_price - stop_price))
+    if risk_per_unit <= 0 or not np.isfinite(risk_per_unit):
+        # Degenerate risk; treat as flat (no-op trade)
+        return {
+            "exit_idx": entry_idx,
+            "exit_time": idx[entry_idx],
+            "exit_price": entry_price,
+            "realized_R": 0.0,
+            "tp1_price": entry_price,
+            "tp2_price": None,
+            "t_to_tp1_min": None,
+            "time_stop_reason": "degenerate_risk",
+            "tp2_label": None,
+        }
+
+    # --- Baseline events: stop, TP1, TP2, time-stop ---
+
+    # Original stop hit (before any BE move).
+    orig_stop_idx = _first_stop_idx(
+        high=high,
+        low=low,
+        stop_price=stop_price,
+        side=side,
+        start_idx=entry_idx,
+    )
+
+    # TP1 result (may or may not hit).
+    tp1_res = apply_tp1(
+        bars=bars,
+        entry_idx=entry_idx,
+        side=side,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        mgmt_cfg=mgmt_cfg,
+    )
+
+    # TP2 target (may or may not hit).
+    tp2_res = compute_tp2_target(
+        bars=bars,
+        entry_idx=entry_idx,
+        side=side,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        mgmt_cfg=mgmt_cfg,
+        refs=refs,
+    )
+
+    # Time-stop (uses TP1 index to decide extension).
+    ts_res = run_time_stop(
+        bars=bars,
+        entry_idx=entry_idx,
+        tp1_idx=tp1_res.idx,
+        side=side,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        time_cfg=time_cfg,
+        vwap_side_ok=vwap_side_ok,
+        trend_ok=trend_ok,
+        sigma_ok=sigma_ok,
+        dd_ok=dd_ok,
+    )
+
+    # Helper to select earliest event from a list of (label, idx).
+    def _earliest(
+        events: list[tuple[str, Optional[int]]],
+    ) -> tuple[Optional[str], Optional[int]]:
+        valid = [(label, i) for (label, i) in events if i is not None]
+        if not valid:
+            return None, None
+        # tie-break priority: stop < tp2 < time_stop < tp1
+        prio = {"stop": 0, "tp2": 1, "time_stop": 2, "tp1": 3}
+        label, i = sorted(valid, key=lambda x: (x[1], prio[x[0]]))[0]
+        return label, i
+
+    # --- Case 1: TP1 never hits OR something else happens before TP1 ---
+
+    earliest_label, earliest_idx = _earliest(
+        [
+            ("stop", orig_stop_idx),
+            ("tp2", tp2_res.idx if tp2_res.hit else None),
+            ("time_stop", ts_res.idx),
+            ("tp1", tp1_res.idx if tp1_res.hit else None),
+        ]
+    )
+
+    if earliest_label is None:
+        # No event at all (we just hold to session close). Treat as flat PnL.
+        return {
+            "exit_idx": entry_idx,
+            "exit_time": idx[entry_idx],
+            "exit_price": entry_price,
+            "realized_R": 0.0,
+            "tp1_price": tp1_res.price,
+            "tp2_price": tp2_res.price if tp2_res.hit else None,
+            "t_to_tp1_min": None,
+            "time_stop_reason": "no_event",
+            "tp2_label": tp2_res.label if tp2_res.hit else None,
+        }
+
+    if earliest_label != "tp1":
+        # We never scaled; full size exits at earliest of stop / tp2 / time_stop.
+        if earliest_label == "stop":
+            exit_price = stop_price
+            reason = "stop"
+        elif earliest_label == "tp2":
+            exit_price = float(tp2_res.price)
+            reason = f"tp2_{tp2_res.label}"
+        else:  # time_stop
+            exit_price = float(bars["close"].iloc[ts_res.idx])
+            reason = ts_res.reason or "time_stop"
+
+        realized_R = side * (exit_price - entry_price) / risk_per_unit
+
+        return {
+            "exit_idx": earliest_idx,
+            "exit_time": idx[earliest_idx],
+            "exit_price": exit_price,
+            "realized_R": realized_R,
+            "tp1_price": tp1_res.price,
+            "tp2_price": tp2_res.price if tp2_res.hit else None,
+            "t_to_tp1_min": None,
+            "time_stop_reason": reason if earliest_label == "time_stop" else "none",
+            "tp2_label": tp2_res.label if tp2_res.hit else None,
+        }
+
+    # --- Case 2: TP1 hits first -> scale out, move stop (maybe), run runner ---
+
+    # Locked-in R on scaled portion.
+    scale = float(mgmt_cfg.scale_at_tp1)
+    r_tp1 = float(mgmt_cfg.tp1_R)
+    locked_R = scale * r_tp1
+
+    # Runner stop after TP1 (BE or original stop).
+    runner_stop_price = tp1_res.stop_after_tp1
+
+    # Compute runner stop hit AFTER TP1.
+    runner_stop_idx = _first_stop_idx(
+        high=high,
+        low=low,
+        stop_price=runner_stop_price,
+        side=side,
+        start_idx=tp1_res.idx,
+    )
+
+    # TP2 for runner: only counts if it occurs AFTER TP1.
+    runner_tp2_idx = None
+    if tp2_res.hit and tp2_res.idx is not None and tp2_res.idx > tp1_res.idx:
+        runner_tp2_idx = tp2_res.idx
+
+    # Time-stop index is already computed; ensure it's after TP1 as well.
+    runner_ts_idx = None
+    runner_ts_reason = "none"
+    if ts_res.idx is not None and ts_res.idx > tp1_res.idx:
+        runner_ts_idx = ts_res.idx
+        runner_ts_reason = ts_res.reason or "time_stop"
+
+    runner_label, runner_idx = _earliest(
+        [
+            ("stop", runner_stop_idx),
+            ("tp2", runner_tp2_idx),
+            ("time_stop", runner_ts_idx),
+        ]
+    )
+
+    if runner_label is None:
+        # No further event; treat runner as flat at last close.
+        runner_idx = len(idx) - 1
+        runner_exit_price = float(bars["close"].iloc[runner_idx])
+        runner_reason = "no_event"
+    else:
+        if runner_label == "stop":
+            runner_exit_price = runner_stop_price
+            runner_reason = "stop"
+        elif runner_label == "tp2":
+            runner_exit_price = float(tp2_res.price)
+            runner_reason = f"tp2_{tp2_res.label}"
+        else:
+            runner_exit_price = float(bars["close"].iloc[runner_ts_idx])
+            runner_reason = runner_ts_reason
+
+    # R on runner portion.
+    runner_R = side * (runner_exit_price - entry_price) / risk_per_unit
+    total_R = locked_R + (1.0 - scale) * runner_R
+
+    final_idx = runner_idx
+    final_time = idx[final_idx]
+
+    # Time-stop reason only if final event is time-stop.
+    time_reason = (
+        runner_reason
+        if runner_label == "time_stop"
+        else ("none" if ts_res.reason is None else ts_res.reason)
+    )
+
+    return {
+        "exit_idx": final_idx,
+        "exit_time": final_time,
+        "exit_price": runner_exit_price,
+        "realized_R": total_R,
+        "tp1_price": tp1_res.price,
+        "tp2_price": tp2_res.price if tp2_res.hit else None,
+        "t_to_tp1_min": tp1_res.t_to_tp1_min,
+        "time_stop_reason": time_reason,
+        "tp2_label": tp2_res.label if tp2_res.hit else None,
+    }
