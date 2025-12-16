@@ -15,8 +15,10 @@ class EntryWindow:
 # Stopping Conditions in respect to 3A.
 @dataclass
 class TimeStopCfg:
-    mode: str = "15min"  # "15min" or "none"
-    conditional_30m: bool = True
+    mode: str = "15m"  # or "none"
+    tp1_timeout_min: int = 15
+    max_holding_min: int = 45  # includes extension
+    allow_extension: bool = True
 
 
 # Slippage Configurations
