@@ -80,6 +80,73 @@ def run_backtest(config_path: str, data_path: str) -> None:
 
     # 6) Generate signals + simulate trades
     signals = generate_signals(df1, df5, cfg)
+
+    # Temp Debug Code
+    def _dbg(signals):
+        print("ROWS:", len(signals))
+        must = [
+            "time_window_ok",
+            "or_break_unlock",
+            "trend_ok",
+            "in_zone",
+            "trigger_ok",
+            "riskcap_ok",
+            "disqualified_2sigma",
+            "direction",
+            "or_high",
+            "or_low",
+        ]
+        present = [c for c in must if c in signals.columns]
+        print("COLS_PRESENT:", present)
+
+        for c in [
+            "time_window_ok",
+            "or_break_unlock",
+            "trend_ok",
+            "in_zone",
+            "trigger_ok",
+            "riskcap_ok",
+        ]:
+            if c in signals.columns:
+                print(f"{c}: {int(signals[c].sum())}")
+
+        if "direction" in signals.columns:
+            print("direction!=0:", int((signals["direction"] != 0).sum()))
+
+        if "disqualified_2sigma" in signals.columns:
+            print("disqualified_2sigma:", int(signals["disqualified_2sigma"].sum()))
+
+        # “final entry candidates” approximation (adjust if your engine differs)
+        if set(["direction", "trigger_ok", "time_window_ok", "riskcap_ok"]).issubset(
+            signals.columns
+        ):
+            ok = (
+                (signals["direction"] != 0)
+                & signals["trigger_ok"]
+                & signals["time_window_ok"]
+                & signals["riskcap_ok"]
+            )
+            if "disqualified_2sigma" in signals.columns:
+                ok = ok & (~signals["disqualified_2sigma"])
+            print("ENTRY_CANDIDATES:", int(ok.sum()))
+
+        for c in ["micro_break_dir", "engulf_dir", "swing_hi", "swing_lo"]:
+            if c in signals.columns:
+                print(
+                    c,
+                    "present",
+                    "nonzero",
+                    (
+                        int((signals[c] != 0).sum())
+                        if signals[c].dtype != bool
+                        else int(signals[c].sum())
+                    ),
+                )
+            else:
+                print(c, "MISSING")
+
+    _dbg(signals)
+
     trades = simulate_trades(df1, signals, cfg)
 
     summary = compute_summary(trades)
