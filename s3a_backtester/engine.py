@@ -1,13 +1,15 @@
 # 3A Engine
 # Strategy 3A Brain + State Machine
 from __future__ import annotations
-import pandas as pd
-import numpy as np
 from typing import Any
 from datetime import date
 from .config import Config
 from .slippage import apply_slippage
 from .management import manage_trade_lifecycle
+from .filters import build_session_filter_mask
+
+import pandas as pd
+import numpy as np
 
 _SIGNAL_COLS = [
     "time_window_ok",
@@ -111,6 +113,12 @@ def simulate_trades(
         & df["time_window_ok"].astype(bool)
         & ~df["disqualified_2sigma"].astype(bool)
     )
+
+    # Session-level filters (tiny-day, low ATR, news blackout, DOM)
+    filters_cfg = getattr(cfg, "filters", None) if cfg is not None else None
+    if filters_cfg is not None:
+        session_mask = build_session_filter_mask(df, filters_cfg)
+        mask &= session_mask
 
     entries = df[mask].copy()
     if entries.empty:
