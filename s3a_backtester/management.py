@@ -305,6 +305,12 @@ def run_time_stop(
     tp1_deadline = entry_time + pd.Timedelta(minutes=tp1_timeout_min)
     hard_deadline = entry_time + pd.Timedelta(minutes=max_holding_min)
 
+    # If TP1 hit occurs AFTER the TP1 timeout, it doesn't count.
+    if tp1_idx is not None:
+        tp1_time = idx[tp1_idx]
+        if tp1_time > tp1_deadline:
+            tp1_idx = None
+
     # Helper to find first bar at/after a given timestamp
     def _first_bar_at_or_after(ts: pd.Timestamp) -> Optional[int]:
         # idx is sorted ascending DatetimeIndex
