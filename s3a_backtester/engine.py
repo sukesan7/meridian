@@ -380,8 +380,6 @@ def generate_signals(
     orh = out["or_high"].astype(float)
     orl = out["or_low"].astype(float)
     vwap = out["vwap"].astype(float)
-    v1u = out["vwap_1u"].astype(float)
-    v1d = out["vwap_1d"].astype(float)
     v2u = out["vwap_2u"].astype(float)
     v2d = out["vwap_2d"].astype(float)
     trend = out["trend_5m"].astype(float)
@@ -451,15 +449,15 @@ def generate_signals(
     # ------------------------------------------------------------------
     # 4) Zone: first pullback into VWAP±1σ after unlock, if not disqualified
     # ------------------------------------------------------------------
-    in_zone = pd.Series(False, index=out.index)
+    in_zone = pd.Series(False, index=out.index, dtype=bool)
 
-    for day_key, day in out.groupby(dates):
+    for _, day in out.groupby(dates, sort=False):
         unlock_mask = day["or_break_unlock"].astype(bool)
         if not unlock_mask.any():
             continue
 
         # If session is disqualified at any point, no zone is ever marked.
-        if day["disqualified_2sigma"].any():
+        if day["disqualified_2sigma"].astype(bool).any():
             continue
 
         unlock_ts = unlock_mask[unlock_mask].index[0]
@@ -472,89 +470,70 @@ def generate_signals(
             continue
 
         if dir_val > 0:
-            zone_mask = (after["close"] >= after["vwap"]) & (
-                after["close"] <= after["vwap_1u"]
-            )
+            zone_mask = (
+                after["close"].astype(float) >= after["vwap"].astype(float)
+            ) & (after["close"].astype(float) <= after["vwap_1u"].astype(float))
         else:
-            zone_mask = (after["close"] <= after["vwap"]) & (
-                after["close"] >= after["vwap_1d"]
-            )
+            zone_mask = (
+                after["close"].astype(float) <= after["vwap"].astype(float)
+            ) & (after["close"].astype(float) >= after["vwap_1d"].astype(float))
 
+        zone_mask = zone_mask.astype(bool)
         if not zone_mask.any():
             continue
 
         zone_ts = zone_mask[zone_mask].index[0]
         in_zone.loc[zone_ts] = True
 
-    out["in_zone"] = in_zone
+    out["in_zone"] = in_zone.astype(bool)
 
     # ------------------------------------------------------------------
-    # 5) Trigger logic: engulf or micro-swing break at / near the zone
+    # 5) Trigger logic: micro-swing break or engulf, AFTER zone touch
     # ------------------------------------------------------------------
     direction = out["direction"].astype("int8")
 
-    # Pattern signals (use Series defaults, not scalars)
-    if "micro_break_dir" in out.columns:
-        micro_raw = out["micro_break_dir"]
-    else:
-        micro_raw = pd.Series(0, index=out.index)
-
-    if "engulf_dir" in out.columns:
-        engulf_raw = out["engulf_dir"]
-    else:
-        engulf_raw = pd.Series(0, index=out.index)
+    # Pattern signals (Series defaults, not scalars)
+    micro_raw = (
+        out["micro_break_dir"]
+        if "micro_break_dir" in out.columns
+        else pd.Series(0, index=out.index)
+    )
+    engulf_raw = (
+        out["engulf_dir"]
+        if "engulf_dir" in out.columns
+        else pd.Series(0, index=out.index)
+    )
 
     micro_dir = pd.to_numeric(micro_raw, errors="coerce").fillna(0).astype("int8")
     engulf_dir = pd.to_numeric(engulf_raw, errors="coerce").fillna(0).astype("int8")
 
+    in_zone = out["in_zone"].astype(bool)
+
     # Once zone has been touched in a session, we are "armed"
-    # `dates` is the ET date index we built earlier.
-    zone_seen = out["in_zone"].astype(bool).groupby(dates).cummax()
+    zone_seen = in_zone.groupby(dates).cummax()
 
-    # Tick size for the "≤ 1 tick beyond band" rule
-    tick_size = 1.0
-    if cfg is not None:
-        inst = getattr(cfg, "instrument", None)
-        tick_size = getattr(inst, "tick_size", tick_size) or tick_size
+    # Allow trigger on the breakout bar: current bar can be OUT of zone.
+    # So require that we were in-zone very recently (last 0–2 bars), session-scoped.
+    in_zone_prev1 = in_zone.groupby(dates).shift(1, fill_value=False).astype(bool)
+    in_zone_prev2 = in_zone.groupby(dates).shift(2, fill_value=False).astype(bool)
+    zone_recent = in_zone | in_zone_prev1 | in_zone_prev2
 
-    close = out["close"].astype(float)
-    vwap = out["vwap"].astype(float)
-    v1u = out["vwap_1u"].astype(float)
-    v1d = out["vwap_1d"].astype(float)
-
-    # Long side: inside [VWAP, +1σ] OR up to 1 tick above +1σ
-    long_core = (direction > 0) & zone_seen & (close >= vwap) & (close <= v1u)
-    long_plus = (direction > 0) & zone_seen & (close > v1u) & (close <= v1u + tick_size)
-    long_near_zone = long_core | long_plus
-
-    # Short side: inside [VWAP, -1σ] OR up to 1 tick below -1σ
-    short_core = (direction < 0) & zone_seen & (close <= vwap) & (close >= v1d)
-    short_plus = (
-        (direction < 0) & zone_seen & (close < v1d) & (close >= v1d - tick_size)
-    )
-    short_near_zone = short_core | short_plus
-
-    # Pattern must be in trade direction
-    long_pattern = (micro_dir > 0) | (engulf_dir > 0)
-    short_pattern = (micro_dir < 0) | (engulf_dir < 0)
-
-    long_trig = (
-        (direction > 0)
-        & long_pattern
-        & long_near_zone
-        & out["time_window_ok"].astype(bool)
-        & ~out["disqualified_2sigma"].astype(bool)
+    # Pattern must be in trade direction (critical)
+    pattern_ok = ((micro_dir != 0) & (micro_dir == direction)) | (
+        (engulf_dir != 0) & (engulf_dir == direction)
     )
 
-    short_trig = (
-        (direction < 0)
-        & short_pattern
-        & short_near_zone
-        & out["time_window_ok"].astype(bool)
-        & ~out["disqualified_2sigma"].astype(bool)
-    )
+    time_ok = out["time_window_ok"].astype(bool)
+    disq = out["disqualified_2sigma"].astype(bool)
 
-    out["trigger_ok"] = long_trig | short_trig
+    out["trigger_ok"] = (
+        (direction != 0)
+        & zone_seen  # must have touched zone at least once this session
+        & zone_recent  # trigger happens at/just after zone (breakout bar allowed)
+        & pattern_ok
+        & time_ok
+        & ~disq
+    )
 
     # ------------------------------------------------------------------
     # 6) Risk cap + stop_price (based on last swing)

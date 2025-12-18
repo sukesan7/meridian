@@ -1,6 +1,7 @@
 # Data Input / Output
 # Achieve a clean time-series dataframe
 from __future__ import annotations
+from pandas.api.types import DatetimeTZDtype
 import pandas as pd
 
 # Set required columns
@@ -9,65 +10,80 @@ REQ_COLS = ("open", "high", "low", "close", "volume")
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
     """
-    Load a 1-minute OHLCV file (CSV or Parquet) and normalize schema.
+    Load 1-minute OHLCV (CSV or Parquet) and normalize:
 
-    - Returns a tz-aware DatetimeIndex in `tz` (default ET).
-    - Forces lowercase, stripped column names.
-    - Requires: open, high, low, close, volume.
+    - Returns tz-aware DatetimeIndex in `tz` (default ET).
+    - Accepts timestamp either as a column (timestamp/datetime/ts_event/etc) OR as the index.
+    - Requires open, high, low, close, volume.
     """
-    # --- read file ---
+
     if path.lower().endswith(".parquet"):
         df = pd.read_parquet(path)
     else:
         df = pd.read_csv(path)
 
-    # --- normalize column names to lowercase + strip whitespace ---
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # --- pick datetime column ---
-    dt_col = None
-    for c in ("datetime", "timestamp", "time", "date"):
-        if c in df.columns:
-            dt_col = c
-            break
+    # 1) If index is already datetime, use it
+    if isinstance(df.index, pd.DatetimeIndex):
+        idx = df.index
+    else:
+        # 2) Otherwise find a datetime column
+        dt_col = None
+        for c in ("ts_event", "datetime", "timestamp", "time", "date"):
+            if c in df.columns:
+                dt_col = c
+                break
+        if dt_col is None:
+            raise ValueError(
+                f"load_minute_df: could not find datetime column in {path!r}; "
+                f"got columns={list(df.columns)}"
+            )
 
-    if dt_col is None:
-        raise ValueError(
-            f"load_minute_df: could not find datetime column in {path!r}; "
-            f"got columns={list(df.columns)}"
-        )
+        s = df[dt_col]
 
-    # --- parse to DatetimeIndex and convert/localize to tz ---
-    idx = pd.to_datetime(df[dt_col], errors="coerce")
-    if idx.isna().any():
-        raise ValueError(
-            f"load_minute_df: datetime parse failed for column {dt_col!r} in {path!r}"
-        )
+        # Parse with minimal ambiguity:
+        # - If dtype already tz-aware -> keep
+        # - If strings look like UTC/offset -> parse as UTC
+        # - Else parse naive and localize to `tz`
+        if isinstance(s.dtype, DatetimeTZDtype):
+            idx = pd.DatetimeIndex(s)
+        else:
+            s_str = s.astype(str)
+            looks_tz = (
+                s_str.str.endswith("Z").any()
+                or s_str.str.contains(r"[+-]\d{2}:\d{2}", regex=True).any()
+            )
+            if looks_tz:
+                idx = pd.DatetimeIndex(pd.to_datetime(s, errors="coerce", utc=True))
+            else:
+                idx = pd.DatetimeIndex(pd.to_datetime(s, errors="coerce"))
 
-    idx = pd.DatetimeIndex(idx)
+        if idx.isna().any():
+            raise ValueError(
+                f"load_minute_df: datetime parse failed for {dt_col!r} in {path!r}"
+            )
+
+        df = df.drop(columns=[dt_col])
+
+    # Convert/localize timezone
     if idx.tz is None:
-        # assume naive timestamps are already in tz (ET)
         idx = idx.tz_localize(tz)
     else:
         idx = idx.tz_convert(tz)
 
     df.index = idx
 
-    # drop the original datetime column if still present
-    if dt_col in df.columns:
-        df = df.drop(columns=[dt_col])
-
-    # --- enforce OHLCV contract ---
-    required = {"open", "high", "low", "close", "volume"}
-    missing = required - set(df.columns)
+    # Enforce OHLCV contract
+    missing = set(REQ_COLS) - set(df.columns)
     if missing:
         raise ValueError(
             f"load_minute_df: missing required OHLCV columns {missing} in {path!r}; "
             f"got columns={list(df.columns)}"
         )
 
-    # final clean-up
-    df = df.sort_index()
+    # Clean index
+    df = df[~df.index.duplicated(keep="last")].sort_index()
     return df
 
 
