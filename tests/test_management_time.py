@@ -162,3 +162,32 @@ def test_time_stop_disabled_mode_none():
     assert res.idx is None
     assert res.time is None
     assert res.reason is None
+
+
+def test_time_stop_tp1_hit_after_15_counts_as_no_tp1():
+    bars = _make_session(30)  # 09:30 .. 09:59
+    entry_idx = 0
+    tp1_idx = 20  # 09:50 (after 15m deadline)
+    side = 1
+
+    cfg = TimeStopCfg(
+        mode="15m",
+        tp1_timeout_min=15,
+        max_holding_min=45,
+        allow_extension=True,
+    )
+
+    res = run_time_stop(
+        bars=bars,
+        entry_idx=entry_idx,
+        tp1_idx=tp1_idx,
+        side=side,
+        entry_price=100.0,
+        stop_price=99.0,
+        time_cfg=cfg,
+    )
+
+    # Exit at 09:45 (idx 15), not at tp1_idx
+    assert res.idx == 15
+    assert res.time == bars.index[15]
+    assert res.reason == "no_tp1_15m"

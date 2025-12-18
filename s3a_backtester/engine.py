@@ -7,18 +7,10 @@ from .config import Config
 from .slippage import apply_slippage
 from .management import manage_trade_lifecycle
 from .filters import build_session_filter_mask
+from .time_stop_conditions import build_time_stop_condition_series
 
 import pandas as pd
 import numpy as np
-
-_SIGNAL_COLS = [
-    "time_window_ok",
-    "or_break_unlock",
-    "in_zone",
-    "trigger_ok",
-    "disqualified_±2σ",
-    "riskcap_ok",
-]
 
 _TRADE_COLS = [
     "date",
@@ -94,9 +86,11 @@ def simulate_trades(
         "vwap_1d": np.nan,
         "micro_break_dir": 0,
         "engulf_dir": 0,
-        # optional daily refs
         "pdh": np.nan,
         "pdl": np.nan,
+        "atr15": np.nan,
+        "news_blackout": False,
+        "dom_bad": False,
     }
     for col, val in defaults.items():
         if col not in df:
@@ -251,6 +245,14 @@ def simulate_trades(
                 "or_height": or_height if np.isfinite(or_height) else None,
             }
 
+            conds = build_time_stop_condition_series(
+                session_df=session_df,
+                entry_idx=entry_idx,
+                side_sign=side_sign,
+                entry_price=float(entry_price),
+                stop_price=float(stop),
+            )
+
             lifecycle = manage_trade_lifecycle(
                 bars=session_df,
                 entry_idx=entry_idx,
@@ -260,8 +262,10 @@ def simulate_trades(
                 mgmt_cfg=mgmt_cfg,
                 time_cfg=time_cfg,
                 refs=refs,
-                # For now we don't wire VWAP/trend/sigma/DD booleans;
-                # passing None means "always OK" inside run_time_stop.
+                vwap_side_ok=conds.vwap_side_ok,
+                trend_ok=conds.trend_ok,
+                sigma_ok=conds.sigma_ok,
+                dd_ok=conds.dd_ok,
             )
 
             exit_time = lifecycle["exit_time"]

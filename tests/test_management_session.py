@@ -221,3 +221,85 @@ def test_management_session_stop_before_tp1(monkeypatch):
     # but t_to_tp1_min should be NaN.
     assert np.isnan(trade["t_to_tp1_min"])
     assert trade["time_stop"] == "none"
+
+
+def test_time_stop_extension_breaks_on_sigma_ok(monkeypatch):
+    """
+    Entry -> TP1 hits quickly, no TP2, no stop.
+    Extension should break when close drops below vwap_1d (long).
+    This test validates engine wiring of sigma_ok into run_time_stop.
+    """
+    idx = pd.date_range("2025-01-01 09:30", periods=50, freq="1min")
+    bars = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 100.2,
+            "low": 99.8,
+            "close": 100.0,
+        },
+        index=idx,
+    )
+
+    entry_ts = idx[1]  # 09:31
+    stop_price = 97.0  # risk = 3.0
+    entry_price = 100.0
+    tp1_price = entry_price + (entry_price - stop_price) * 1.0  # 103.0
+
+    # Entry at 09:31, TP1 at 09:32
+    bars.loc[idx[2], ["high", "low", "close"]] = [
+        103.2,
+        99.8,
+        103.0,
+    ]
+
+    # Later, violate sigma_ok
+    bars.loc[idx[20], ["high", "low", "close"]] = [
+        100.2,
+        98.9,
+        98.9,
+    ]
+
+    signals = bars.copy()
+    signals["direction"] = 0
+    signals["trigger_ok"] = False
+    signals["riskcap_ok"] = True
+    signals["time_window_ok"] = True
+    signals["disqualified_2sigma"] = False
+    signals["stop_price"] = np.nan
+
+    # Required refs/features
+    signals["or_high"] = 110.0
+    signals["or_low"] = 100.0
+    signals["atr15"] = 5.0
+    signals["vwap"] = 0.0
+    signals["vwap_1u"] = 101.0
+    signals["vwap_1d"] = 99.0
+    signals["micro_break_dir"] = 0
+    signals["engulf_dir"] = 0
+    signals["pdh"] = np.nan
+    signals["pdl"] = np.nan
+    signals["trend_dir_5m"] = 1
+
+    signals.loc[entry_ts, "direction"] = 1
+    signals.loc[entry_ts, "trigger_ok"] = True
+    signals.loc[entry_ts, "stop_price"] = stop_price
+
+    mgmt_cfg = MgmtCfg(tp1_R=1.0, tp2_R=10.0, scale_at_tp1=0.5, move_to_BE_on_tp1=False)
+    ts_cfg = TimeStopCfg(
+        mode="15m", tp1_timeout_min=15, max_holding_min=45, allow_extension=True
+    )
+    cfg = DummyConfig(mgmt_cfg=mgmt_cfg, ts_cfg=ts_cfg, tick_size=1.0)
+
+    def _no_slip(side: str, ts, price: float, cfg_obj):
+        return price
+
+    monkeypatch.setattr("s3a_backtester.engine.apply_slippage", _no_slip)
+
+    trades = simulate_trades(df1=bars, signals=signals, cfg=cfg)
+    assert len(trades) == 1
+    trade = trades.iloc[0]
+
+    # Expect exit at the sigma-break bar
+    assert trade["tp1"] == pytest.approx(tp1_price)
+    assert trade["exit_time"] == idx[20]
+    assert trade["time_stop"] != "none"
