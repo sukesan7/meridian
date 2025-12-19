@@ -20,6 +20,7 @@ dependencies = [
 dev = ["pytest>=8.0", "pre-commit>=3.7", "ruff>=0.6.0", "black>=24.0"]
 
 [project.scripts]
+meridian-run = "s3a_backtester.cli:main"
 threea-run = "s3a_backtester.cli:main"
 
 [tool.setuptools.packages.find]

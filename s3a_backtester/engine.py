@@ -358,6 +358,45 @@ def generate_signals(
         if col not in out:
             out[col] = val
 
+    # --- Safe Apply Wrapper ---
+    def _safe_apply(builder, frame: pd.DataFrame, *args, **kwargs) -> pd.DataFrame:
+        """Call a feature builder that might return None (in-place mutation)."""
+        res = builder(frame, *args, **kwargs)
+        return frame if res is None else res
+
+    # --- Make sure index is ET for session grouping ---
+    idx = out.index
+    if getattr(idx, "tz", None) is not None:
+        idx_et = idx.tz_convert("America/New_York")
+    else:
+        idx_et = idx
+    dates = pd.Index(idx_et.date, name="date")
+    times = idx_et.time
+
+    # ------------------------------------------------------------------
+    # (Optional) try to build missing features if you have builders imported
+    # IMPORTANT: do NOT let out become None
+    # ------------------------------------------------------------------
+    # Example (only if you actually have these imported):
+    # if "or_high" not in out.columns or "or_low" not in out.columns:
+    #     out = _safe_apply(compute_session_refs, out)
+    # if "vwap" not in out.columns or "vwap_1u" not in out.columns:
+    #     out = _safe_apply(compute_session_vwap_bands, out)
+
+    # If trend is provided on df_5m, align it (tests often pass df_5m=None)
+    if (
+        "trend_5m" not in out.columns
+        and df_5m is not None
+        and "trend_5m" in df_5m.columns
+    ):
+        out["trend_5m"] = df_5m["trend_5m"].reindex(out.index, method="ffill")
+    if (
+        "trend_dir_5m" not in out.columns
+        and df_5m is not None
+        and "trend_dir_5m" in df_5m.columns
+    ):
+        out["trend_dir_5m"] = df_5m["trend_dir_5m"].reindex(out.index, method="ffill")
+
     # ------------------------------------------------------------------
     # Decide whether we have enough columns for FULL logic
     # ------------------------------------------------------------------
@@ -380,47 +419,37 @@ def generate_signals(
     orh = out["or_high"].astype(float)
     orl = out["or_low"].astype(float)
     vwap = out["vwap"].astype(float)
+    v1u = out["vwap_1u"].astype(float)
+    v1d = out["vwap_1d"].astype(float)
     v2u = out["vwap_2u"].astype(float)
     v2d = out["vwap_2d"].astype(float)
     trend = out["trend_5m"].astype(float)
 
     # ------------------------------------------------------------------
-    # 1) Time window (entry_window from cfg, or all True if no cfg)
+    # 1) Time window
     # ------------------------------------------------------------------
-    idx = out.index
-    if getattr(idx, "tz", None) is not None:
-        idx_et = idx.tz_convert("America/New_York")
-    else:
-        idx_et = idx
-
-    times = idx_et.time
-    dates = pd.Index(idx_et.date, name="date")
-
     ew = getattr(cfg, "entry_window", None) if cfg is not None else None
     if ew is None:
-        # Tests without cfg expect all bars to be time_window_ok == True
         time_ok = pd.Series(True, index=out.index)
     else:
-        start_str = getattr(ew, "start", "09:35")
-        end_str = getattr(ew, "end", "11:00")
-        start_time = pd.Timestamp(start_str).time()
-        end_time = pd.Timestamp(end_str).time()
-        mask = (times >= start_time) & (times <= end_time)
-        time_ok = pd.Series(mask, index=out.index)
-
+        start_time = pd.Timestamp(getattr(ew, "start", "09:35")).time()
+        end_time = pd.Timestamp(getattr(ew, "end", "11:00")).time()
+        time_ok = pd.Series(
+            (times >= start_time) & (times <= end_time), index=out.index
+        )
     out["time_window_ok"] = time_ok
 
     # ------------------------------------------------------------------
-    # 2) Direction (sign of trend) + OR break unlock
+    # 2) Direction + first unlock event
     # ------------------------------------------------------------------
     is_long_trend = trend > 0
     is_short_trend = trend < 0
 
-    direction = np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0)).astype(
-        "int8"
+    dir_series = pd.Series(
+        np.where(is_long_trend, 1, np.where(is_short_trend, -1, 0)).astype("int8"),
+        index=out.index,
     )
-    out["direction"] = direction
-    dir_series = out["direction"]
+    out["direction"] = dir_series
 
     breaks_long = close > orh
     breaks_short = close < orl
@@ -429,70 +458,70 @@ def generate_signals(
 
     long_unlock_raw = is_long_trend & breaks_long & above_vwap & time_ok
     short_unlock_raw = is_short_trend & breaks_short & below_vwap & time_ok
-    unlock_raw = long_unlock_raw | short_unlock_raw
+    unlock_raw = pd.Series(
+        (long_unlock_raw | short_unlock_raw).astype(bool), index=out.index
+    )
 
-    unlock_count = pd.Series(unlock_raw, index=out.index).groupby(dates).cumsum()
-    out["or_break_unlock"] = unlock_count.eq(1)
+    out["unlocked"] = unlock_raw.groupby(dates).cummax()
+    prev = unlock_raw.groupby(dates).shift(1, fill_value=False)
+    out["or_break_unlock"] = unlock_raw & ~prev
 
     # ------------------------------------------------------------------
-    # 3) Opposite 2σ disqualifier (cumulative per day)
+    # 3) Opposite 2σ disqualifier (session-scoped cumulative)
     # ------------------------------------------------------------------
-    hit_opp_long = is_long_trend & (close <= v2d)  # long trend → watch lower band
-    hit_opp_short = is_short_trend & (close >= v2u)  # short trend → watch upper band
-    hit_opp = hit_opp_long | hit_opp_short
+    hit_opp_long = is_long_trend & (close <= v2d)
+    hit_opp_short = is_short_trend & (close >= v2u)
+    hit_opp = (hit_opp_long | hit_opp_short).astype(bool)
 
-    disq = pd.Series(hit_opp, index=out.index).groupby(dates).cumsum().astype(bool)
+    # Optional: relax for real runs ONLY (defaults keep tests the same)
+    rules = getattr(cfg, "signals", None) if cfg is not None else None
+    disq_after_unlock = bool(getattr(rules, "disqualify_after_unlock", False))
 
+    unlocked = out.get("unlocked", pd.Series(False, index=out.index)).astype(bool)
+    hit_for_disq = (hit_opp & unlocked) if disq_after_unlock else hit_opp
+
+    disq = hit_for_disq.groupby(dates).cummax().astype(bool)
     out["disqualified_2sigma"] = disq
-    out["disqualified_±2σ"] = disq
+    out["disqualified_±2σ"] = disq  # backwards compatibility
 
     # ------------------------------------------------------------------
-    # 4) Zone: first pullback into VWAP±1σ after unlock, if not disqualified
+    # 4) Zone: first pullback into VWAP±1σ after unlock (one event per day)
     # ------------------------------------------------------------------
-    in_zone = pd.Series(False, index=out.index, dtype=bool)
+    direction = out["direction"].astype("int8")
+    unlock_event = out["or_break_unlock"].astype(bool)  # event
+    unlocked = out.get("unlocked", unlock_event).astype(bool)  # state fallback
+    disq = out["disqualified_2sigma"].astype(bool)
 
-    for _, day in out.groupby(dates, sort=False):
-        unlock_mask = day["or_break_unlock"].astype(bool)
-        if not unlock_mask.any():
-            continue
+    # Optional: "range" zone touch for real runs (defaults keep tests the same)
+    zone_touch_mode = str(getattr(rules, "zone_touch_mode", "close")).lower()
 
-        # If session is disqualified at any point, no zone is ever marked.
-        if day["disqualified_2sigma"].astype(bool).any():
-            continue
+    if zone_touch_mode == "range" and {"high", "low"}.issubset(out.columns):
+        hi = out["high"].astype(float)
+        lo = out["low"].astype(float)
+        long_zone_touch = (lo <= v1u) & (hi >= vwap)
+        short_zone_touch = (hi >= v1d) & (lo <= vwap)
+    else:
+        # test-compatible default: close-based touch
+        long_zone_touch = (close >= vwap) & (close <= v1u)
+        short_zone_touch = (close <= vwap) & (close >= v1d)
 
-        unlock_ts = unlock_mask[unlock_mask].index[0]
-        dir_val = int(day.loc[unlock_ts, "direction"])
-        if dir_val == 0:
-            continue
+    zone_touch = ((direction > 0) & long_zone_touch) | (
+        (direction < 0) & short_zone_touch
+    )
 
-        after = day.loc[day.index > unlock_ts]
-        if after.empty:
-            continue
+    # must be AFTER unlock bar, must not already be disqualified on that bar
+    zone_candidate = (unlocked & ~unlock_event & ~disq & zone_touch).astype(bool)
 
-        if dir_val > 0:
-            zone_mask = (
-                after["close"].astype(float) >= after["vwap"].astype(float)
-            ) & (after["close"].astype(float) <= after["vwap_1u"].astype(float))
-        else:
-            zone_mask = (
-                after["close"].astype(float) <= after["vwap"].astype(float)
-            ) & (after["close"].astype(float) >= after["vwap_1d"].astype(float))
-
-        zone_mask = zone_mask.astype(bool)
-        if not zone_mask.any():
-            continue
-
-        zone_ts = zone_mask[zone_mask].index[0]
-        in_zone.loc[zone_ts] = True
+    # exactly one zone event per session/day:
+    # cumsum==1 "sticks" after the first True, so we MUST AND with zone_candidate
+    zone_count = zone_candidate.groupby(dates).cumsum()
+    in_zone = (zone_count == 1) & zone_candidate
 
     out["in_zone"] = in_zone.astype(bool)
 
     # ------------------------------------------------------------------
-    # 5) Trigger logic: micro-swing break or engulf, AFTER zone touch
+    # 5) Trigger: micro-break or engulf after zone touch (breakout bar allowed)
     # ------------------------------------------------------------------
-    direction = out["direction"].astype("int8")
-
-    # Pattern signals (Series defaults, not scalars)
     micro_raw = (
         out["micro_break_dir"]
         if "micro_break_dir" in out.columns
@@ -508,17 +537,19 @@ def generate_signals(
     engulf_dir = pd.to_numeric(engulf_raw, errors="coerce").fillna(0).astype("int8")
 
     in_zone = out["in_zone"].astype(bool)
+    zone_seen = in_zone.groupby(dates).cummax().astype(bool)
 
-    # Once zone has been touched in a session, we are "armed"
-    zone_seen = in_zone.groupby(dates).cummax()
+    # Optional: widen trigger lookback for real runs (defaults keep tests the same)
+    lookback = int(getattr(rules, "trigger_lookback_bars", 2))
+    lookback = max(0, min(lookback, 10))
 
-    # Allow trigger on the breakout bar: current bar can be OUT of zone.
-    # So require that we were in-zone very recently (last 0–2 bars), session-scoped.
-    in_zone_prev1 = in_zone.groupby(dates).shift(1, fill_value=False).astype(bool)
-    in_zone_prev2 = in_zone.groupby(dates).shift(2, fill_value=False).astype(bool)
-    zone_recent = in_zone | in_zone_prev1 | in_zone_prev2
+    zone_recent = in_zone.copy()
+    for k in range(1, lookback + 1):
+        zone_recent = zone_recent | in_zone.groupby(dates).shift(
+            k, fill_value=False
+        ).astype(bool)
 
-    # Pattern must be in trade direction (critical)
+    direction = out["direction"].astype("int8")
     pattern_ok = ((micro_dir != 0) & (micro_dir == direction)) | (
         (engulf_dir != 0) & (engulf_dir == direction)
     )
@@ -527,65 +558,92 @@ def generate_signals(
     disq = out["disqualified_2sigma"].astype(bool)
 
     out["trigger_ok"] = (
-        (direction != 0)
-        & zone_seen  # must have touched zone at least once this session
-        & zone_recent  # trigger happens at/just after zone (breakout bar allowed)
-        & pattern_ok
-        & time_ok
-        & ~disq
+        (direction != 0) & zone_seen & zone_recent & pattern_ok & time_ok & ~disq
     )
 
     # ------------------------------------------------------------------
-    # 6) Risk cap + stop_price (based on last swing)
+    # 6) Stop + risk-cap
+    #     - Keep any pre-set stop_price (tests sometimes set it)
+    #     - If missing, infer from latest swing (session-scoped)
+    #     - riskcap_ok is evaluated on any bar where stop_price is known
     # ------------------------------------------------------------------
-    tick_size = 0.25
-    cap_mult = 1.25
-    if cfg is not None:
-        tick_size = getattr(cfg, "tick_size", tick_size) or tick_size
-        cap_mult = getattr(cfg, "risk_cap_multiple", cap_mult) or cap_mult
-    tick_size = float(tick_size)
+    tick_size = 1.0
+    inst = getattr(cfg, "instrument", None) if cfg is not None else None
+    tick_size = float(getattr(inst, "tick_size", tick_size) or tick_size)
 
-    or_height = (orh - orl).abs()
-    max_sl_dist = or_height * cap_mult
+    max_mult = 1.25
+    risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
+    max_mult = float(getattr(risk_cfg, "max_stop_or_mult", max_mult) or max_mult)
 
-    swing_low_flag = (
-        out["swing_low"].astype(bool)
-        if "swing_low" in out.columns
-        else pd.Series(False, index=out.index)
-    )
-    swing_high_flag = (
-        out["swing_high"].astype(bool)
-        if "swing_high" in out.columns
-        else pd.Series(False, index=out.index)
-    )
+    # Ensure or_height exists
+    if "or_height" not in out.columns:
+        out["or_height"] = out["or_high"].astype(float) - out["or_low"].astype(float)
 
-    last_swing_low = (
-        out["low"].where(swing_low_flag).ffill()
-        if "low" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
-    last_swing_high = (
-        out["high"].where(swing_high_flag).ffill()
-        if "high" in out.columns
-        else pd.Series(np.nan, index=out.index)
-    )
+    # Start from existing stop_price if present; DO NOT overwrite test-provided stops
+    if "stop_price" in out.columns:
+        stop_price = pd.to_numeric(out["stop_price"], errors="coerce").astype(float)
+    else:
+        stop_price = pd.Series(np.nan, index=out.index, dtype=float)
 
-    stop_price = pd.Series(np.nan, index=out.index, dtype="float64")
-    long_mask = dir_series > 0
-    short_mask = dir_series < 0
+    direction = out["direction"].astype("int8")
 
-    # Long: 1 tick below last swing low
-    stop_price[long_mask] = last_swing_low[long_mask] - tick_size
-    # Short: 1 tick above last swing high
-    stop_price[short_mask] = last_swing_high[short_mask] + tick_size
+    # ---- infer missing stops from swings (if swing markers exist) ----
+    if (
+        ("swing_lo" in out.columns)
+        or ("swing_low" in out.columns)
+        or ("swing_hi" in out.columns)
+        or ("swing_high" in out.columns)
+    ):
+        # resolve swing marker columns
+        swing_lo = (
+            out["swing_lo"].astype(bool)
+            if "swing_lo" in out.columns
+            else (
+                out["swing_low"].astype(bool)
+                if "swing_low" in out.columns
+                else pd.Series(False, index=out.index)
+            )
+        )
+        swing_hi = (
+            out["swing_hi"].astype(bool)
+            if "swing_hi" in out.columns
+            else (
+                out["swing_high"].astype(bool)
+                if "swing_high" in out.columns
+                else pd.Series(False, index=out.index)
+            )
+        )
+
+        # session-scoped latest swing values
+        last_swing_lo = out["low"].where(swing_lo).groupby(dates).ffill()
+        last_swing_hi = out["high"].where(swing_hi).groupby(dates).ffill()
+
+        cand_stop = pd.Series(np.nan, index=out.index, dtype=float)
+        longs = direction > 0
+        shorts = direction < 0
+        cand_stop.loc[longs] = (last_swing_lo.loc[longs] - tick_size).astype(float)
+        cand_stop.loc[shorts] = (last_swing_hi.loc[shorts] + tick_size).astype(float)
+
+        # only fill missing
+        stop_price = stop_price.where(stop_price.notna(), cand_stop)
+
+    # ---- risk-cap (evaluate whenever stop exists) ----
+    entry_px = out["close"].astype(float)
+    or_h = out["or_height"].astype(float).abs()
+    cap = max_mult * or_h
+
+    risk_dist = pd.Series(np.nan, index=out.index, dtype=float)
+    longs = direction > 0
+    shorts = direction < 0
+    risk_dist.loc[longs] = entry_px.loc[longs] - stop_price.loc[longs]
+    risk_dist.loc[shorts] = stop_price.loc[shorts] - entry_px.loc[shorts]
+
+    cap_ok = stop_price.notna() & (risk_dist > 0) & (risk_dist <= cap)
+
+    # If stop is unknown, we leave riskcap_ok=True (not evaluated yet).
+    riskcap_ok = stop_price.isna() | cap_ok
+
     out["stop_price"] = stop_price
-
-    sl_dist = pd.Series(np.nan, index=out.index, dtype="float64")
-    sl_dist[long_mask] = close[long_mask] - stop_price[long_mask]
-    sl_dist[short_mask] = stop_price[short_mask] - close[short_mask]
-
-    # If stop_price is NaN, keep riskcap_ok == True (we don't have a valid stop yet)
-    riskcap_ok = (~sl_dist.notna()) | (sl_dist <= max_sl_dist)
-    out["riskcap_ok"] = riskcap_ok
+    out["riskcap_ok"] = riskcap_ok.astype(bool)
 
     return out
