@@ -1,4 +1,4 @@
-## Week 4 – Trade Management, Session Filters, and Databento API Pipeline (Meridian)
+## Week 4 – Trade Management, Session Filters, and Databento API Pipeline
 
 ✅ Implemented
 
