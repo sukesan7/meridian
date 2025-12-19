@@ -12,6 +12,7 @@ This document defines the **1-minute input data contract** for Meridian (3A-Back
 
 If you are looking for **how to fetch and normalize futures data**, see `docs/data-pipeline.md`.
 
+---
 
 ## 1) Input Data Contract (1-minute bars)
 
