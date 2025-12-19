@@ -1,3 +1,6 @@
+# QQQ 1-min OHLCV data for scaffolding during Week 1.
+# This QQQ dev dataset is no longer used.
+
 from s3a_backtester.engine import generate_signals
 from s3a_backtester.data_io import load_minute_df, slice_rth, resample
 from s3a_backtester.features import (
