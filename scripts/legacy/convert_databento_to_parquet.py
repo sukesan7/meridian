@@ -1,4 +1,5 @@
 # Databento OHLCV-1m CSV -> normalized Parquet (per-day, ET-indexed)
+# Legacy: used for Databento web portal CSV exports. Not used in the current API pipeline.
 """
 Converts Databento OHLCV 1-minute CSV files into engine-friendly Parquet:
 
