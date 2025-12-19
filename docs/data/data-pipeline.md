@@ -11,7 +11,6 @@ This document describes the **current, supported pipeline** for acquiring and no
 
 For stable data assumptions (schema, tz/DST, RTH, resampling), see `docs/data-notes.md`.
 
-
 ---
 
 ## Folder Layout
