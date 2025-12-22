@@ -36,7 +36,7 @@ class SlippageCfg:
 class FiltersCfg:
     skip_tiny_or: bool = True
     tiny_or_mult: float = 0.25
-    low_atr_percentile: float = 0.2
+    low_atr_percentile: float = 20.0  # PERCENT 0–100
     news_blackout: bool = False
 
 
@@ -62,6 +62,20 @@ class MgmtCfg:
     move_to_BE_on_tp1: bool = True
 
 
+# Risk Configuration
+@dataclass
+class RiskCfg:
+    max_stop_or_mult: float = 1.25
+
+
+# Signals Configuration
+@dataclass
+class SignalsCfg:
+    disqualify_after_unlock: bool = True
+    zone_touch_mode: str = "range"  # "range" vs "close"
+    trigger_lookback_bars: int = 5
+
+
 # 3A General Configuration
 @dataclass
 class Config:
@@ -69,25 +83,25 @@ class Config:
     tz: str = "America/New_York"
     entry_window: EntryWindow = field(default_factory=EntryWindow)
     time_stop: TimeStopCfg = field(default_factory=TimeStopCfg)
-    risk_cap_or_mult: float = 1.25
+    risk: RiskCfg = field(default_factory=RiskCfg)
     slippage: SlippageCfg = field(default_factory=SlippageCfg)
     filters: FiltersCfg = field(default_factory=FiltersCfg)
+    signals: SignalsCfg = field(default_factory=SignalsCfg)
     zones: ZonesCfg = field(default_factory=ZonesCfg)
     trend: TrendCfg = field(default_factory=TrendCfg)
     management: MgmtCfg = field(default_factory=MgmtCfg)
 
 
 # Merge Dataclasses (Take the dataclass and overlay a dict of changes on top, recursing into nested dataclasses)
-def _merge_dc(obj, patch):
+def _merge_dc(obj, patch, *, path=""):
     if not isinstance(patch, dict):
         return obj
     for k, v in patch.items():
         if not hasattr(obj, k):
-            continue
+            raise ValueError(f"Unknown config key: {path + k}")
         cur = getattr(obj, k)
-        # nested dataclass?
         if hasattr(cur, "__dataclass_fields__") and isinstance(v, dict):
-            _merge_dc(cur, v)
+            _merge_dc(cur, v, path=path + k + ".")
         else:
             setattr(obj, k, v)
     return obj
@@ -98,5 +112,11 @@ def load_config(path: str) -> Config:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     cfg = Config()
+
+    # normalize time_stop.mode
+    m = (cfg.time_stop.mode or "").lower()
+    if m in {"15min", "15m", "15"}:
+        cfg.time_stop.mode = "15m"
+
     _merge_dc(cfg, raw)
     return cfg
