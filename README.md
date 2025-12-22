@@ -1,104 +1,97 @@
 # Meridian — Deterministic Futures Backtester (Strategy 3A)
 
-Meridian is a **deterministic, research-grade backtesting engine** for intraday futures execution logic (Strategy 3A: *VWAP Trend Pullback*). It consumes **1-minute OHLCV** (Databento continuous futures), computes session features (OR, VWAP bands, structure), generates signals (unlock → zone → trigger), and simulates trades with a rule-driven management lifecycle (TP1/TP2/time-stop).
-
-> **Current status (end of Week 4):** end-to-end pipeline is working on real Databento continuous data, management + time-stop conditions are wired, session filters exist, CLI runs, tests pass, and Week 4 docs are written. Remaining work is largely **signal richness** (engulf, swing hi/lo, better structure) to increase trade frequency / realism.
+Meridian is a **deterministic, research‑grade backtesting engine** for intraday futures execution logic (Strategy 3A: *VWAP Trend Pullback*). It consumes **1‑minute OHLCV** (Databento continuous futures), builds session features (Opening Range, anchored VWAP + bands, structure), generates signals (unlock → zone touch → trigger), and simulates trades using a rule‑driven management lifecycle (TP1/TP2/time‑stop + slippage).
 
 ---
 
-## Why this exists
+## What problem this solves
 
-Most student “backtesters” are:
-- nondeterministic (hidden state, lookahead bias),
-- hand-wavy about execution (fills, slippage, session resets),
-- impossible to reproduce (no data contract, no config contract, no tests).
+Backtesting intraday futures strategies reliably is hard because small implementation details dominate outcomes:
 
-Meridian is the opposite:
-- **deterministic**: same input data + config ⇒ same outputs
-- **explicit contracts**: data schema + config schema + state machine
-- **test-first**: unit + integration coverage for critical Week 1–4 rules
-- **research workflow**: CLI, artifacts, documented weekly milestones
+- session boundaries and timezone handling (UTC vs ET, DST behavior)
+- realistic execution assumptions (slippage, time stops, partial scale outs)
+- stateful, multi‑stage signals (unlock → pullback → trigger)
+- reproducibility (same data + config should produce the same outputs)
+
+Meridian is built to make these assumptions **explicit**, **testable**, and **repeatable**.
 
 ---
 
-## Key capabilities
+## How it works (high level)
 
-### Engine
-- Session-scoped state machine:
-  - **Unlock** (OR break in trend direction)
-  - **Zone** (first pullback into VWAP±1σ after unlock)
-  - **Trigger** (micro-break / engulf after zone touch; breakout bar allowed)
-  - **Risk-cap + stop** (OR-multiple cap + swing-based stop)
-- Trade simulation with:
-  - entry/exit timestamps
-  - realized R-multiples
-  - TP1 scaling + BE move
-  - TP2 arbitration (R-target / levels where implemented)
-  - time-stop (15m + conditional extension rules)
+### 1) Data → normalized session bars
+1. Fetch 1‑minute continuous futures OHLCV from Databento (e.g., `NQ.v.0`, `ES.v.0`).
+2. Normalize to a clean `vendor_parquet` schema and slice to **RTH** (09:30–16:00 ET).
+3. Load into the engine with a tz‑aware ET index (strategy logic runs in **America/New_York**).
 
-### Data pipeline (Week 4)
-- Databento API **continuous symbol** fetch (e.g., `NQ.v.0`, `ES.v.0`)
-- Normalization to a clean **vendor_parquet** format suitable for Meridian
-- RTH slicing to match strategy assumptions (09:30–16:00 ET)
-- Inventory tooling to verify coverage and schema
+### 2) Feature build (`features.py`, `structure.py`)
+Per session/day, features are computed deterministically:
+- Opening Range (OR) stats
+- Anchored VWAP and σ bands (used for “zone” logic)
+- Lightweight structure/trend helpers (e.g., swing context) used by filters/triggers
 
-### Tooling & reproducibility
-- CLI entrypoint (`meridian-run`) for repeatable runs
-- YAML configuration (`configs/base.yaml`)
-- `pytest` test suite validating core rule logic
+### 3) Signal engine (`engine.py`)
+Meridian uses an explicit session state machine:
+- **Unlock:** OR break in the trend direction
+- **Zone touch:** first pullback into VWAP +-1σ after unlock (configurable close-only vs range-overlap)
+- **Trigger:** breakout / micro‑break within a configurable lookback window
+- **Risk:** stop distance capped by an OR multiple (`risk.max_stop_or_mult`)
+
+### 4) Trade simulation (`management.py`, `time_stop_conditions.py`, `slippage.py`)
+Given entries/exits, the simulator applies:
+- slippage (normal + “hot minute” rules)
+- TP1/TP2 targets in R
+- scale‑out at TP1 + optional move‑to‑breakeven
+- time‑stop (TP1 timeout, max holding, optional extension)
+
+### 5) Evaluation + robustness
+- `metrics.summary(...)` produces standardized run metrics in R space.
+- `walkforward.rolling_walkforward(...)` runs rolling **IS → OOS** windows with no parameter bleed.
+- `monte_carlo.mc_simulate_R(...)` bootstraps the trade R‑series (IID or block) to estimate drawdown/CAGR distributions.
 
 ---
 
-## Repo layout
+## Repo Layout
 
 ```
 .
+├── .github/workflows/ci.yml              # CI: tests + lint gates
 ├── configs/
-│   └── base.yaml
+│   └── base.yaml                         # primary YAML config (strategy + execution)
 ├── docs/
 │   ├── week1-notes.md
 │   ├── week2-notes.md
 │   ├── week3-notes.md
 │   ├── week4-notes.md
+│   ├── week5-notes.md
 │   └── data/
 │       ├── data-notes.md
 │       └── data-pipeline.md
-├── scripts/
-│   ├── databento_fetch_continuous.py
-│   ├── normalize_continuous_to_vendor_parquet.py
-│   ├── data_inventory.py
-│   ├── dev/
-│   │   └── debug_signals_qqq.py          # dev-only (legacy I/O smoke)
-│   └── legacy/
-│       └── convert_databento_to_parquet.py # portal-download legacy path
 ├── s3a_backtester/
-│   ├── __init__.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── data_io.py
-│   ├── engine.py
-│   ├── features.py
-│   ├── filters.py
-│   ├── management.py
-│   ├── metrics.py
-│   ├── monte_carlo.py
-│   ├── portfolio.py
-│   ├── slippage.py
-│   ├── structure.py
+│   ├── cli.py                            # `threea-run` / `meridian-run`
+│   ├── config.py                         # dataclass schema + YAML loader
+│   ├── data_io.py                        # parquet/csv loader + tz normalization
+│   ├── engine.py                         # unlock → zone → trigger logic
+│   ├── features.py                       # OR/VWAP/bands + session features
+│   ├── filters.py                        # session filter mask
+│   ├── management.py                     # TP1/TP2/BE + lifecycle
+│   ├── metrics.py                        # summary + grouped_summary (OR quartile / DOW / month)
+│   ├── monte_carlo.py                    # bootstrap MC on trade R series
+│   ├── portfolio.py                      # equity/DD helpers used by MC/metrics
+│   ├── slippage.py                       # simple slippage model
+│   ├── structure.py                      # 5min trend direction
 │   ├── time_stop_conditions.py
-│   └── walkforward.py
-├── tests/
-│   ├── test_engine.py
-│   ├── test_engine_triggers.py
-│   ├── test_engine_week3.py
-│   ├── test_filters.py
-│   ├── test_io_rth_resample.py
-│   ├── test_management_session.py
-│   ├── test_management_time.py
-│   ├── test_management_tp.py
-│   ├── test_metrics.py
-│   └── test_refs_vwap.py
-├── pyproject.toml
+│   └── walkforward.py                    # rolling IS/OOS runner
+├── tests/                                # unit tests for core invariants
+├── scripts/
+│   ├── dev/
+│   │   └── debug_signals_qqq.py          # dev script for testing IO on QQQ
+│   ├── legacy/
+│   │   └── convert_databento_to_parquet.py  # legacy script for databento web portal data
+│   ├── databento_fetch_continuous.py     # Databento API fetch → raw parquet
+│   ├── normalize_continuous_to_vendor_parquet.py  # raw → vendor_parquet (RTH + by_day + combined)
+│   └── data_inventory.py                 # coverage/schema sanity checks
+├── pyproject.toml                        # deps + CLI entrypoints
 └── README.md
 ```
 
@@ -106,9 +99,9 @@ Meridian is the opposite:
 
 ## Environment & dependencies
 
-- Python: **3.10+** (developed on Windows / VSCode / PowerShell)
-- Core deps: `pandas`, `numpy`, `pyarrow`, `pyyaml`, `scipy`
-- Dev deps: `pytest`, `ruff`, `black`, `pre-commit`
+- Python **3.10+**
+- Core: `pandas`, `numpy`, `pyarrow`, `pyyaml`, `scipy`
+- Dev: `pytest`, `ruff`, `black`, `pre-commit`
 
 Install (recommended):
 ```powershell
@@ -118,51 +111,41 @@ python -m pip install -U pip setuptools wheel
 python -m pip install -e ".[dev]"
 ```
 
-### If editable install (`pip install -e .`) fails on Windows
-Some Windows/Python setups can hit distutils/setuptools conflicts. If that happens, you can still run Meridian without editable mode:
-
-```powershell
-python -m pip install ".[dev]"   # non-editable
-python -m s3a_backtester.cli --help
-```
-
-(Editable install is convenience, not a blocker for the project.)
-
 ---
 
-## Configuration
+## Configuration (YAML + dataclass schema)
 
-Primary config file:
-- `configs/base.yaml`
+Primary config: `configs/base.yaml`
 
-It defines:
+The loader (`s3a_backtester/config.py`) maps YAML into typed dataclasses. The config surface covers:
 - instrument + timezone
 - entry window
-- risk cap (OR multiple)
-- filters (tiny OR, ATR, news)
-- signal policy switches (zone touch mode, lookbacks)
-- management parameters (TP1/TP2, time-stop mode)
-- slippage rules
+- risk (`risk.max_stop_or_mult`)
+- slippage rules (including “hot minutes”)
+- filters (tiny OR, ATR regime, news blackout)
+- signal policies (zone touch mode, trigger lookback, disqualify timing)
+- management (TP1/TP2/scale‑out/BE + time stop)
 
 Example (trimmed):
 ```yaml
 instrument: "NQ"
 tz: "America/New_York"
 
-entry_window: { start: "09:35", end: "11:00" }
-time_stop: { mode: "15min", conditional_30m: true }
-risk_cap_or_mult: 1.25
+entry_window:
+  start: "09:35"
+  end: "11:00"
 
-slippage:
-  normal_ticks: 1
-  hot_ticks: 2
-  hot_minutes: ["09:30-09:40", "10:00-10:02"]
+risk:
+  max_stop_or_mult: 1.25
 
-filters:
-  skip_tiny_or: true
-  tiny_or_mult: 0.25
-  low_atr_percentile: 0.2
-  news_blackout: false
+signals:
+  disqualify_after_unlock: true
+  zone_touch_mode: "range"
+  trigger_lookback_bars: 5
+
+trend:
+  require_vwap_side: true
+  swing_lookback_5m: 2
 
 management:
   tp1_R: 1.0
@@ -171,39 +154,47 @@ management:
   move_to_BE_on_tp1: true
 ```
 
----
-
-## Data contract (vendor_parquet)
-
-Meridian expects 1-minute OHLCV with a timestamp:
-
-**Combined RTH files** (typical):
-- `data/vendor_parquet/NQ/NQ.v.0_YYYY-MM-DD_YYYY-MM-DD_RTH.parquet`
-- `data/vendor_parquet/ES/ES.v.0_YYYY-MM-DD_YYYY-MM-DD_RTH.parquet`
-
-Schema:
-- `timestamp` (UTC, tz-aware)
-- `open, high, low, close, volume`
-- optional `symbol`
-
-Meridian then converts timestamps to ET internally and applies the strategy logic in ET.
-
----
-
-## Data pipeline (Databento continuous → vendor_parquet)
-
-### 1) Fetch raw Databento continuous OHLCV (API)
-```powershell
-python scripts\databento_fetch_continuous.py `
-  --symbol NQ.v.0 `
-  --start 2025-09-01 `
-  --end   2025-11-30
+Config sanity check:
+```bash
+python -c "from s3a_backtester.config import load_config; import pprint; pprint.pp(load_config('configs/base.yaml'))"
 ```
 
-### 2) Normalize to Meridian vendor_parquet (RTH + clean schema)
+---
+
+## Data contract (`vendor_parquet`)
+
+Meridian expects 1‑minute OHLCV with a timestamp column (UTC, tz‑aware):
+
+- `timestamp` (UTC, tz‑aware)
+- `open`, `high`, `low`, `close`, `volume`
+- optional `symbol`
+
+Normalization script output (typical):
+- `data/vendor_parquet/<PRODUCT>/<SYMBOL>_<start>_<end>_RTH.parquet`
+- plus an optional `by_day/` layout for convenient inspection.
+
+Important:
+- Strategy logic is defined in **ET**. The loader converts timestamps to `America/New_York` internally before computing OR/VWAP/session features.
+
+---
+
+## Databento pipeline (continuous futures → vendor_parquet)
+
+### 1) Fetch raw continuous OHLCV (API)
+Requires `DATABENTO_API_KEY`:
 ```powershell
-python scripts\normalize_continuous_to_vendor_parquet.py `
-  --raw-parquet data\raw\databento_api\GLBX.MDP3_ohlcv-1m_NQ.v.0_2025-09-01_2025-11-30.parquet `
+$env:DATABENTO_API_KEY="YOUR_KEY_HERE"
+```
+
+Fetch (example):
+```powershell
+python scripts/databento_fetch_continuous.py --symbol NQ.v.0 --start 2025-09-01 --end 2025-11-30
+```
+
+### 2) Normalize to `vendor_parquet` (RTH + clean schema)
+```powershell
+python scripts/normalize_continuous_to_vendor_parquet.py `
+  --raw-parquet data/raw/databento_api/GLBX.MDP3_ohlcv-1m_NQ.v.0_2025-09-01_2025-11-30.parquet `
   --symbol  NQ.v.0 `
   --product NQ `
   --start   2025-09-01 `
@@ -212,139 +203,109 @@ python scripts\normalize_continuous_to_vendor_parquet.py `
 
 ### 3) Inventory / sanity check coverage
 ```powershell
-python scripts\data_inventory.py --parquet-dir data\vendor_parquet\NQ --out outputs\data_inventory_nq.csv
-python scripts\data_inventory.py --parquet-dir data\vendor_parquet\ES --out outputs\data_inventory_es.csv
+python scripts/data_inventory.py --parquet-dir data/vendor_parquet/NQ --out outputs/data_inventory_nq.csv
 ```
 
-> Notes on legacy scripts:
-> - `scripts/legacy/convert_databento_to_parquet.py` is the **portal-download path** (parent product → many instruments). Kept for reference but not the current pipeline.
-> - `scripts/dev/debug_signals_qqq.py` is dev-only.
+Notes:
+- Databento requests are typically chunked (e.g., ≤ ~120 days per fetch) for credit‑control and API limits.
+- For multi‑chunk datasets, normalize each chunk and then combine the resulting `*_RTH.parquet` files into a single run file (Meridian’s CLI expects a **single parquet path**).
 
 ---
 
-## Running backtests
+## Running the engine (CLI)
 
-### CLI entrypoint
+The package exposes two equivalent entrypoints:
+- `threea-run`
+- `meridian-run`
 
-`pyproject.toml` exposes:
-- `meridian-run` (preferred)
-- `threea-run` (legacy alias)
+All commands:
+- print a compact JSON summary to stdout
+- write artifacts under `outputs/<cmd>/<run_id>/`
 
-### Describe data file
+### Backtest
 ```powershell
-meridian-run describe-data --data data\vendor_parquet\NQ\NQ.v.0_2025-09-01_2025-11-30_RTH.parquet
+threea-run backtest `
+  --config configs/base.yaml `
+  --data   data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-11-30_RTH.parquet `
+  --from   2024-12-01 `
+  --to     2025-11-30 `
+  --run-id nq_12m_bt
 ```
 
-### Run backtest (prints a summary + optional debug counters)
+Expected artifacts:
+- `outputs/backtest/<run_id>/summary.json`
+- `outputs/backtest/<run_id>/trades.parquet`
+
+### Walk-forward (rolling IS → OOS)
 ```powershell
-meridian-run run-backtest `
-  --config configs\base.yaml `
-  --data   data\vendor_parquet\NQ\NQ.v.0_2025-09-01_2025-11-30_RTH.parquet `
-  --debug-signals
+threea-run walkforward `
+  --config  configs/base.yaml `
+  --data    data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-11-30_RTH.parquet `
+  --from    2024-12-01 `
+  --to      2025-11-30 `
+  --is-days  63 `
+  --oos-days 21 `
+  --step     21 `
+  --run-id   nq_12m_wf
 ```
 
-Output:
-- a run summary dict (trades, win_rate, avg_R, maxDD_R, SQN)
-- optional signal coverage counters (unlock/zone/trigger/disqualifiers)
+Expected artifacts:
+- `outputs/walkforward/<run_id>/is_summary.csv`
+- `outputs/walkforward/<run_id>/oos_summary.csv`
+- `outputs/walkforward/<run_id>/oos_trades.parquet`
+- (optional) labeled equity curve / per-window metadata (if enabled)
 
----
-
-## Testing & quality gates
-
-### Unit tests
+### Monte Carlo (bootstrap on trade R series)
 ```powershell
-pytest -q
+threea-run monte-carlo `
+  --config          configs/base.yaml `
+  --trades-file     outputs/walkforward/nq_12m_wf/oos_trades.parquet `
+  --n-paths         2000 `
+  --risk-per-trade  0.01 `
+  --block-size      5 `
+  --run-id          nq_12m_wf_mc
 ```
 
-### Lint/format (if configured via pre-commit)
-```powershell
-pre-commit run --all-files
-```
+Expected artifacts:
+- `outputs/monte-carlo/<run_id>/summary.json`
+- `outputs/monte-carlo/<run_id>/mc_samples.parquet`
 
-Meridian’s Week 1–4 gates are enforced by tests:
-- IO/RTH slicing correctness (including DST behavior)
-- session refs + VWAP bands
-- unlock/zone/trigger invariants
-- risk-cap/stop correctness
-- management lifecycle + time-stop scenarios
-- engine/management integration
+Common mistake:
+- Do **not** pass `oos_summary.csv` to Monte Carlo. Use the trade file (`*_trades.parquet`).
 
 ---
 
 ## Outputs & artifacts
 
-Meridian is designed to emit **auditable artifacts** for research:
-- debug counters (coverage)
-- trade table (entry/exit, R, flags)
-- run summaries
+Meridian is built around **auditable research artifacts**. Each run produces:
+- machine-readable summaries (`summary.json` / `*_summary.csv`)
+- trade tables (`trades.parquet` / `oos_trades.parquet`)
+- Monte Carlo samples (`mc_samples.parquet`)
 
-Week 4’s “artifacts” concept is documented in `docs/week4-notes.md` (and related docs). If you want persistent files per run, the next natural step is adding:
-- `--out outputs/backtest/<run_id>/`
-- `trades.parquet` / `trades.csv`
-- `summary.json`
-- `sampled_trades.csv` for audit
-
-(That wiring is straightforward and belongs in Week 5 if not already implemented.)
+Recommended workflow:
+- Treat `outputs/` as a run ledger: one run ID per experiment.
+- Record run IDs + commands.
 
 ---
 
-## Current limitations (honest status)
+## Testing & quality gates
 
-Right now, low trade counts are expected because:
-- `engulf_dir` is not implemented/available in the real-data feature set yet
-- `swing_hi/swing_lo` are not fully wired as first-class features on live data
-- triggers are conservative by design (zone gating + direction match + disqualifiers)
+Run unit tests:
+```powershell
+pytest -q
+```
 
-This is not a “strategy conclusion” yet — it’s a **feature completeness** issue.
+Run pre-commit (lint/format):
+```powershell
+pre-commit run --all-files
+```
 
----
+CI:
+- GitHub Actions runs the same gates on PRs (see `.github/workflows/ci.yml`).
 
-## Next steps (Week 5 direction)
-
-1) **Feature completeness (signal richness)**
-   - implement `engulf_dir`
-   - implement robust `swing_hi/swing_lo` + micro-structure signals on 5m/1m
-   - ensure feature parity between synthetic tests and real continuous data
-
-2) **Research ergonomics**
-   - persistent run artifacts (`--out`, trades parquet/csv, summary json)
-   - deterministic sampling tooling for audits
-   - structured logging (instead of print)
-
-3) **Evaluation tooling**
-   - parameter sweeps
-   - walk-forward + Monte Carlo gating (skeleton exists)
-
-4) **Packaging hygiene**
-   - rename package metadata (`project.name`) to `meridian` when ready
-   - optional: remove `threea-run` alias after transition
 
 ---
 
 ## Disclaimer
 
-Meridian is a **research tool**, not a production trading system. Backtests are sensitive to data quality, session definitions, and execution assumptions. This repo does not constitute financial advice.
-
----
-
-## Quick “Day-1” workflow (PowerShell)
-
-```powershell
-# 1) Setup
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -U pip setuptools wheel
-python -m pip install -e ".[dev]"
-
-# 2) Tests
-pytest -q
-
-# 3) Fetch + normalize 3 months (NQ)
-python scripts\databento_fetch_continuous.py --symbol NQ.v.0 --start 2025-09-01 --end 2025-11-30
-python scripts\normalize_continuous_to_vendor_parquet.py --raw-parquet data\raw\databento_api\GLBX.MDP3_ohlcv-1m_NQ.v.0_2025-09-01_2025-11-30.parquet --symbol NQ.v.0 --product NQ --start 2025-09-01 --end 2025-11-30
-
-# 4) Run backtest
-meridian-run run-backtest --config configs\base.yaml --data data\vendor_parquet\NQ\NQ.v.0_2025-09-01_2025-11-30_RTH.parquet --debug-signals
-```
-
----
+Meridian is a **research tool**. Results depend on data quality, session definitions, and execution assumptions. Nothing in this repository is financial advice.
