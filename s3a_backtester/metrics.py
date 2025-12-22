@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 
 # ----------------------------
@@ -34,12 +35,16 @@ def equity_curve_R(trades: pd.DataFrame) -> pd.Series:
 
 
 def max_drawdown_R(curve: pd.Series) -> float:
-    """Max drawdown of an equity curve in *R units* (peak - trough)."""
+    """Max drawdown of an equity curve in R units, anchored at 0."""
     if curve is None or len(curve) == 0:
         return 0.0
-    roll_max = curve.cummax()
-    dd = roll_max - curve
-    return float(dd.max()) if len(dd) else 0.0
+
+    values = pd.to_numeric(curve, errors="coerce").fillna(0.0).to_numpy()
+    values = np.concatenate(([0.0], values))  # anchor at 0
+
+    roll_max = np.maximum.accumulate(values)
+    dd = roll_max - values
+    return float(dd.max()) if dd.size else 0.0
 
 
 def sqn(trades: pd.DataFrame) -> float:
