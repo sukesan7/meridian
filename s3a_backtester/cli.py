@@ -2,25 +2,18 @@
 Meridian CLI (formerly 3A Backtester)
 
 Glue layer: config -> data -> features -> engine -> outputs.
-
-Design goals:
-- Deterministic pipeline (no hidden state).
-- Clean artifacts per run: outputs/backtest/<run_id>/...
-- Debug is opt-in.
-- Avoid accidental column clobbering.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import pandas as pd
+
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import pandas as pd
-
 from .config import load_config
 from .data_io import load_minute_df, slice_rth, resample
 from .features import (
@@ -34,6 +27,7 @@ from .engine import generate_signals, simulate_trades
 from .metrics import compute_summary
 from .walkforward import rolling_walkforward_frames
 from .monte_carlo import mc_simulate_R
+from .run_meta import build_run_meta, write_run_meta
 
 
 # -----------------------------
@@ -298,6 +292,9 @@ def cmd_backtest(
     debug_signals: bool = False,
     write_signals: bool = True,
     write_trades: bool = True,
+    seed: int | None = None,
+    hash_data: bool = False,
+    argv: list[str] | None = None,
 ) -> None:
     cfg = load_config(config_path)
 
@@ -318,17 +315,29 @@ def cmd_backtest(
 
     # artifacts
     _write_json(root / "summary.json", summary)
-    _write_json(
-        root / "run_meta.json",
+
+    meta = build_run_meta(
+        cmd="backtest",
+        argv=argv or [],
+        run_id=run_id,
+        outputs_dir=root,
+        config_path=config_path,
+        config_obj=cfg,
+        data_path=data_path,
+        seed=seed,
+        hash_data=hash_data,
+    )
+    # add command-specific fields
+    meta.update(
         {
-            "cmd": "backtest",
-            "config": config_path,
-            "data": data_path,
-            "run_id": run_id,
             "date_from": date_from,
             "date_to": date_to,
-        },
+            "debug_signals": debug_signals,
+            "write_signals": write_signals,
+            "write_trades": write_trades,
+        }
     )
+    write_run_meta(root, meta)
 
     if write_signals:
         signals.to_parquet(root / "signals.parquet", index=True)
@@ -353,6 +362,9 @@ def cmd_walkforward(
     step: int | None = None,
     write_trades: bool = True,
     write_equity: bool = True,
+    seed: int | None = None,
+    hash_data: bool = False,
+    argv: list[str] | None = None,
 ) -> None:
     cfg = load_config(config_path)
 
@@ -397,25 +409,38 @@ def cmd_walkforward(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
+    # artifacts
     _write_json(root / "summary.json", overall_oos)
-    _write_json(
-        root / "run_meta.json",
+
+    meta = build_run_meta(
+        cmd="walkforward",
+        argv=argv or [],
+        run_id=run_id,
+        outputs_dir=root,
+        config_path=config_path,
+        config_obj=cfg,
+        data_path=data_path,
+        seed=seed,
+        hash_data=hash_data,
+    )
+    meta.update(
         {
-            "cmd": "walkforward",
-            "config": config_path,
-            "data": data_path,
-            "run_id": run_id,
             "date_from": date_from,
             "date_to": date_to,
             "is_days": is_days,
             "oos_days": oos_days,
             "step": step,
-        },
+            "write_trades": write_trades,
+            "write_equity": write_equity,
+        }
     )
+    write_run_meta(root, meta)
 
+    # summaries
     is_summary.to_csv(root / "is_summary.csv", index=False)
     oos_summary.to_csv(root / "oos_summary.csv", index=False)
 
+    # optional artifacts
     if write_equity:
         wf_equity.to_parquet(root / "wf_equity.parquet", index=False)
 
@@ -438,9 +463,10 @@ def cmd_mc(
     seed: int | None = None,
     years: float | None = None,
     keep_equity_paths: bool = False,
+    hash_data: bool = False,
+    argv: list[str] | None = None,
 ) -> None:
-    # kept for interface consistency; not needed for core today
-    _ = load_config(config_path)
+    cfg = load_config(config_path)
 
     trades = _read_trades_file(trades_path)
 
@@ -456,28 +482,36 @@ def cmd_mc(
 
     summary = out["summary"]
     samples = out["samples"]
-    equity_paths = out["equity_paths"]
+    equity_paths = out.get("equity_paths")
 
     run_id = run_id or _now_run_id()
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
     _write_json(root / "summary.json", summary)
-    _write_json(
-        root / "run_meta.json",
+
+    meta = build_run_meta(
+        cmd="monte-carlo",
+        argv=argv or [],
+        run_id=run_id,
+        outputs_dir=root,
+        config_path=config_path,
+        config_obj=cfg,
+        data_path=trades_path,  # MC input is trades file
+        seed=seed,
+        hash_data=hash_data,
+    )
+    meta.update(
         {
-            "cmd": "monte-carlo",
-            "config": config_path,
             "trades_file": trades_path,
-            "run_id": run_id,
             "n_paths": n_paths,
             "risk_per_trade": risk_per_trade,
             "block_size": block_size,
-            "seed": seed,
             "years": years,
             "keep_equity_paths": keep_equity_paths,
-        },
+        }
     )
+    write_run_meta(root, meta)
 
     samples.to_parquet(root / "mc_samples.parquet", index=False)
     samples.to_csv(root / "mc_samples.csv", index=False)
@@ -493,7 +527,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # ---------------- backtest ----------------
-    p_bt = sub.add_parser("backtest", help="Run a single backtest (writes artifacts)")
+    p_bt = sub.add_parser("backtest", help="Run a single backtest")
     p_bt.add_argument("--config", required=True)
     p_bt.add_argument("--data", required=True)
     p_bt.add_argument("--from", dest="date_from", default=None)
@@ -508,6 +542,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_bt.add_argument(
         "--write-trades", action=argparse.BooleanOptionalAction, default=True
+    )
+    p_bt.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Determinism seed.",
+    )
+    p_bt.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of data file (can be slow for large files).",
     )
 
     p_bt_old = sub.add_parser("run-backtest", help="Alias for backtest")
@@ -526,6 +571,17 @@ def main(argv: list[str] | None = None) -> None:
     p_bt_old.add_argument(
         "--write-trades", action=argparse.BooleanOptionalAction, default=True
     )
+    p_bt_old.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Determinism seed.",
+    )
+    p_bt_old.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of data file (can be slow for large files).",
+    )
 
     # ---------------- walkforward ----------------
     p_wf = sub.add_parser("walkforward", help="Run rolling 3m IS / 1m OOS walk-forward")
@@ -538,6 +594,17 @@ def main(argv: list[str] | None = None) -> None:
     p_wf.add_argument("--is-days", type=int, default=63)
     p_wf.add_argument("--oos-days", type=int, default=21)
     p_wf.add_argument("--step", type=int, default=None)
+    p_wf.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Determinism seed.",
+    )
+    p_wf.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of data file (can be slow for large files).",
+    )
     p_wf.add_argument(
         "--write-trades", action=argparse.BooleanOptionalAction, default=True
     )
@@ -556,6 +623,17 @@ def main(argv: list[str] | None = None) -> None:
     p_wf_old.add_argument("--oos-days", type=int, default=21)
     p_wf_old.add_argument("--step", type=int, default=None)
     p_wf_old.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Determinism seed (stored in run_meta; WF is deterministic today).",
+    )
+    p_wf_old.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of data file (can be slow for large files).",
+    )
+    p_wf_old.add_argument(
         "--write-trades", action=argparse.BooleanOptionalAction, default=True
     )
     p_wf_old.add_argument(
@@ -571,8 +649,18 @@ def main(argv: list[str] | None = None) -> None:
     p_mc.add_argument("--n-paths", type=int, default=1000)
     p_mc.add_argument("--risk-per-trade", type=float, default=0.01)
     p_mc.add_argument("--block-size", type=int, default=None)
-    p_mc.add_argument("--seed", type=int, default=None)
     p_mc.add_argument("--years", type=float, default=None)
+    p_mc.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed controlling Monte Carlo sampling (deterministic).",
+    )
+    p_mc.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of trades file (can be slow).",
+    )
     p_mc.add_argument(
         "--keep-equity-paths", action=argparse.BooleanOptionalAction, default=False
     )
@@ -585,13 +673,25 @@ def main(argv: list[str] | None = None) -> None:
     p_mc_old.add_argument("--n-paths", type=int, default=1000)
     p_mc_old.add_argument("--risk-per-trade", type=float, default=0.01)
     p_mc_old.add_argument("--block-size", type=int, default=None)
-    p_mc_old.add_argument("--seed", type=int, default=None)
     p_mc_old.add_argument("--years", type=float, default=None)
+    p_mc_old.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed controlling Monte Carlo sampling (deterministic).",
+    )
+    p_mc_old.add_argument(
+        "--hash-data",
+        action="store_true",
+        help="Compute SHA256 of trades file (can be slow).",
+    )
     p_mc_old.add_argument(
         "--keep-equity-paths", action=argparse.BooleanOptionalAction, default=False
     )
 
     args = p.parse_args(argv)
+
+    argv_list = list(argv) if argv is not None else []
 
     if args.cmd in ("backtest", "run-backtest"):
         cmd_backtest(
@@ -604,6 +704,9 @@ def main(argv: list[str] | None = None) -> None:
             debug_signals=bool(args.debug_signals),
             write_signals=bool(args.write_signals),
             write_trades=bool(args.write_trades),
+            seed=getattr(args, "seed", None),
+            hash_data=bool(getattr(args, "hash_data", False)),
+            argv=argv_list,
         )
         return
 
@@ -620,21 +723,28 @@ def main(argv: list[str] | None = None) -> None:
             step=args.step,
             write_trades=bool(args.write_trades),
             write_equity=bool(args.write_equity),
+            seed=getattr(args, "seed", None),
+            hash_data=bool(getattr(args, "hash_data", False)),
+            argv=argv_list,
         )
         return
 
     if args.cmd in ("monte-carlo", "run-mc"):
+        # alias uses --trades (dest=trades_file); primary uses --trades-file
+        trades_file = getattr(args, "trades_file", None)
         cmd_mc(
             args.config,
-            args.trades_file,
+            trades_file,
             out_dir=args.out_dir,
             run_id=args.run_id,
             n_paths=int(args.n_paths),
             risk_per_trade=float(args.risk_per_trade),
             block_size=args.block_size,
-            seed=args.seed,
+            seed=getattr(args, "seed", None),
+            hash_data=bool(getattr(args, "hash_data", False)),
             years=args.years,
             keep_equity_paths=bool(args.keep_equity_paths),
+            argv=argv_list,
         )
         return
 
