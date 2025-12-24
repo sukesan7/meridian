@@ -31,8 +31,11 @@ def _infer_years_from_trades(trades: pd.DataFrame) -> float | None:
         return None
 
     # Use the earliest entry and latest exit if possible
-    entry = pd.to_datetime(trades.get("entry_time", pd.Series([])), errors="coerce")
-    exit_ = pd.to_datetime(trades.get("exit_time", pd.Series([])), errors="coerce")
+    empty_dt = pd.Series(dtype="datetime64[ns]")
+    entry = pd.to_datetime(
+        trades.get("entry_time", empty_dt), errors="coerce", utc=True
+    )
+    exit_ = pd.to_datetime(trades.get("exit_time", empty_dt), errors="coerce", utc=True)
 
     start = entry.min() if not entry.empty else pd.NaT
     end = exit_.max() if not exit_.empty else pd.NaT
@@ -85,6 +88,7 @@ def mc_simulate_R(
     seed: int | None = None,
     years: float | None = None,
     keep_equity_paths: bool = False,
+    require_seed: bool = True,
 ) -> dict[str, Any]:
     """
     Monte Carlo simulation on a trade R-series.
@@ -101,6 +105,12 @@ def mc_simulate_R(
     """
     r = _realized_r(trades)
     n = int(r.size)
+
+    if require_seed and seed is None:
+        raise ValueError(
+            "seed is required for deterministic Monte Carlo (pass --seed)."
+        )
+    rng = np.random.default_rng(seed)
 
     if n_paths <= 0:
         raise ValueError("n_paths must be > 0")
@@ -132,8 +142,6 @@ def mc_simulate_R(
         )
     if years <= 0.0:
         raise ValueError("years must be > 0")
-
-    rng = np.random.default_rng(seed)
 
     rows: list[dict[str, Any]] = []
     equity_paths = []  # list[DataFrame] only if keep_equity_paths
@@ -186,12 +194,13 @@ def mc_simulate_R(
         "n_paths": int(n_paths),
         "risk_per_trade": float(risk_per_trade),
         "block_size": block_size,
+        "seed": seed,
         "years": float(years),
         "blowup_rate": blowup_rate,
-        "median_cagr": float(cagr_s.quantile(0.50)),
-        "maxDD_pct_p05": float(dd.quantile(0.05)),
-        "maxDD_pct_p50": float(dd.quantile(0.50)),
-        "maxDD_pct_p95": float(dd.quantile(0.95)),
+        "median_cagr": float(cagr_s.quantile(0.50, interpolation="linear")),
+        "maxDD_pct_p05": float(dd.quantile(0.05, interpolation="linear")),
+        "maxDD_pct_p50": float(dd.quantile(0.50, interpolation="linear")),
+        "maxDD_pct_p95": float(dd.quantile(0.95, interpolation="linear")),
     }
 
     eq_df = None
