@@ -90,9 +90,8 @@ def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
         "close": "last",
         "volume": "sum",
     }
-    return cast(
-        pd.DataFrame,
+    return (
         df1.resample(rule, label="right", closed="right")
         .agg(cast(Any, agg))
-        .dropna(how="all"),
+        .dropna(how="all")
     )

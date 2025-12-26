@@ -9,7 +9,7 @@ Handles the full lifecycle of an active trade, including:
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Mapping
+from typing import Optional, Mapping, cast, Any
 from .config import MgmtCfg, TimeStopCfg
 
 import numpy as np
@@ -211,7 +211,8 @@ def run_time_stop(
     if getattr(time_cfg, "mode", "15m") == "none":
         return TimeStopResult(idx=None, time=None, reason=None)
 
-    idx = bars.index
+    # NUCLEAR OPTION: Cast index to Any to silence stubborn mypy indexing errors
+    idx = cast(Any, bars.index)
 
     entry_time = idx[entry_idx]
     tp1_timeout_min = getattr(time_cfg, "tp1_timeout_min", 15)
@@ -237,20 +238,20 @@ def run_time_stop(
         if stop_idx is None:
             return TimeStopResult(idx=None, time=None, reason=None)
 
-        # Mypy override: explicit check + ignore
-        safe_idx = int(stop_idx)
-        exit_time = idx[safe_idx]  # type: ignore
-        return TimeStopResult(idx=safe_idx, time=exit_time, reason="no_tp1_15m")
+        final_int_idx = int(stop_idx)
+        return TimeStopResult(
+            idx=final_int_idx, time=idx[final_int_idx], reason="no_tp1_15m"
+        )
 
     if not allow_extension:
         stop_idx = _first_bar_at_or_after(hard_deadline)
         if stop_idx is None:
             return TimeStopResult(idx=None, time=None, reason=None)
 
-        # Mypy override: explicit check + ignore
-        safe_idx = int(stop_idx)
-        exit_time = idx[safe_idx]  # type: ignore
-        return TimeStopResult(idx=safe_idx, time=exit_time, reason="max_hold")
+        final_int_idx = int(stop_idx)
+        return TimeStopResult(
+            idx=final_int_idx, time=idx[final_int_idx], reason="max_hold"
+        )
 
     start = tp1_idx + 1
     if start >= len(idx):
@@ -320,7 +321,7 @@ def manage_trade_lifecycle(
     trend_ok: Optional[pd.Series] = None,
     sigma_ok: Optional[pd.Series] = None,
     dd_ok: Optional[pd.Series] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Computes the complete outcome of a trade given full session data."""
     high = bars["high"]
     low = bars["low"]
@@ -490,10 +491,8 @@ def manage_trade_lifecycle(
             runner_exit_price = float(tp2_res.price) if tp2_res.price else 0.0
             runner_reason = f"tp2_{tp2_res.label}"
         else:
-            if runner_ts_idx is not None:
-                runner_exit_price = float(bars["close"].iloc[int(runner_ts_idx)])
-            else:
-                runner_exit_price = entry_price
+            assert runner_ts_idx is not None
+            runner_exit_price = float(bars["close"].iloc[int(runner_ts_idx)])
 
             runner_reason = runner_ts_reason
 
