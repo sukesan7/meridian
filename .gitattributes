@@ -12,3 +12,4 @@
 *.gif -text
 *.zip -text
 *.ico -text
+*.ipynb linguist-vendored
