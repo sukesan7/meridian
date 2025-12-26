@@ -25,8 +25,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=4.1",
     "pre-commit>=3.7",
-    "ruff>=0.6.0"
+    "ruff>=0.6.0",
+    "black>=24.0",
+    "mypy>=1.8",
+    "pandas-stubs>=2.1",
+    "types-PyYAML>=6.0"
 ]
 
 [project.scripts]
