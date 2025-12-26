@@ -3,26 +3,37 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "3a-backtester"
+name = "meridian-core"  # Updated from '3a-backtester' to match your branding (Optional)
 version = "0.1.0"
 description = "Deterministic backtester for Strategy 3A (VWAP Trend Pullback)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "pandas>=2.2",
-  "numpy>=1.26",
-  "pyyaml>=6.0",
-  "scipy>=1.11",
-  "pyarrow>=14.0"
+    "black>=24.0",
+    "databento>=0.29",
+    "ipykernel>=6.29",
+    "jupyterlab>=4.0",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+    "scipy>=1.11",
+    "seaborn>=0.13"
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pre-commit>=3.7", "ruff>=0.6.0", "black>=24.0"]
+dev = [
+    "pytest>=8.0",
+    "pre-commit>=3.7",
+    "ruff>=0.6.0"
+]
 
 [project.scripts]
 meridian-run = "s3a_backtester.cli:main"
-threea-run = "s3a_backtester.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["s3a_backtester*"]
-exclude = ["tests*", "data*", "configs*", "outputs*", "notebooks*", ".github*", ".vscode*"]
+# 'exclude' is cleaner now; setuptools ignores hidden dirs (.git, .vscode) by default,
+# but keeping 'tests', 'data', 'notebooks' explicitly excluded is good practice.
+exclude = ["tests*", "data*", "configs*", "outputs*", "notebooks*"]
