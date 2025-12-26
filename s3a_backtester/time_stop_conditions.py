@@ -1,4 +1,10 @@
-# Time Stop Conditions for the Engine
+"""
+Time Stop Boolean Logic
+-----------------------
+Evaluates specific market conditions (Trend, VWAP Side, Volatility)
+used to grant time extensions for open trades.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,11 +37,9 @@ def _infer_trend_ok(session_df: pd.DataFrame, side_sign: int) -> Optional[pd.Ser
 
     s = session_df[col]
 
-    # Numeric convention (+1 bull, -1 bear)
     if pd.api.types.is_numeric_dtype(s):
         return s.astype("float").fillna(0).astype(int).eq(side_sign)
 
-    # String convention
     vals = s.astype(str).str.lower()
     if side_sign == 1:
         return vals.isin({"bull", "up", "long", "uptrend"})
@@ -50,20 +54,11 @@ def build_time_stop_condition_series(
     stop_price: float,
 ) -> TimeStopConditionSeries:
     """
-    Build the 4 boolean series used by time-stop extension:
-
-      - VWAP side intact:
-          long: close >= vwap
-          short: close <= vwap
-
-      - 5-min trend intact: inferred from available trend column.
-
-      - No close beyond ±1σ against:
-          long: close >= vwap_1d
-          short: close <= vwap_1u
-
-      - DD <= 0.5R:
-          MAE since entry in R-units <= 0.5.
+    Constructs boolean series for all time-extension conditions:
+    - VWAP Side
+    - Trend Alignment
+    - 1-Sigma Bounds
+    - Drawdown Limits
     """
     if session_df.empty:
         return TimeStopConditionSeries(None, None, None, None)
@@ -71,13 +66,11 @@ def build_time_stop_condition_series(
     if side_sign not in (1, -1):
         raise ValueError(f"side_sign must be +1 or -1, got {side_sign!r}")
 
-    # Safety
     entry_idx = int(entry_idx)
     entry_idx = max(0, min(entry_idx, len(session_df) - 1))
 
     risk_per_unit = float(abs(entry_price - stop_price))
     if not np.isfinite(risk_per_unit) or risk_per_unit <= 0:
-        # Degenerate risk -> can't compute MAE in R
         dd_ok = None
     else:
         dd_ok = pd.Series(True, index=session_df.index)
@@ -93,7 +86,6 @@ def build_time_stop_condition_series(
         else:
             dd_ok = None
 
-    # VWAP side intact
     vwap_side_ok = None
     if "close" in session_df.columns and "vwap" in session_df.columns:
         if side_sign == 1:
@@ -101,7 +93,6 @@ def build_time_stop_condition_series(
         else:
             vwap_side_ok = session_df["close"] <= session_df["vwap"]
 
-    # ±1σ against rule
     sigma_ok = None
     if "close" in session_df.columns:
         if side_sign == 1 and "vwap_1d" in session_df.columns:
@@ -109,7 +100,6 @@ def build_time_stop_condition_series(
         elif side_sign == -1 and "vwap_1u" in session_df.columns:
             sigma_ok = session_df["close"] <= session_df["vwap_1u"]
 
-    # Trend
     trend_ok = _infer_trend_ok(session_df, side_sign)
 
     return TimeStopConditionSeries(

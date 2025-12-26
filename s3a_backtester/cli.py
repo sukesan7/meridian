@@ -1,7 +1,8 @@
 """
-Meridian CLI (formerly 3A Backtester)
-
-Glue layer: config -> data -> features -> engine -> outputs.
+CLI Entry Point
+---------------
+Command-line interface for running Backtests, Walk-Forward Analysis, and Monte Carlo.
+Handles argument parsing, configuration loading, and artifact generation.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import pandas as pd
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from .config import load_config
 from .data_io import load_minute_df, slice_rth, resample
 from .features import (
@@ -30,10 +31,8 @@ from .monte_carlo import mc_simulate_R
 from .run_meta import build_run_meta, write_run_meta
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def _now_run_id() -> str:
+    """Generates a timestamp-based run ID."""
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
@@ -44,7 +43,7 @@ def _safe_mkdir(p: Path) -> None:
 def _write_json(path: Path, obj: Any) -> None:
     def _default(x: Any) -> Any:
         if is_dataclass(x):
-            return asdict(x)
+            return asdict(cast(Any, x))
         if hasattr(x, "__dict__"):
             return dict(x.__dict__)
         return str(x)
@@ -55,7 +54,7 @@ def _write_json(path: Path, obj: Any) -> None:
 def _print_compact_json(obj: Any) -> None:
     def _default(x: Any) -> Any:
         if is_dataclass(x):
-            return asdict(x)
+            return asdict(cast(Any, x))
         if hasattr(x, "__dict__"):
             return dict(x.__dict__)
         return str(x)
@@ -77,10 +76,7 @@ def _slice_date_range(
     *,
     tz: str,
 ) -> pd.DataFrame:
-    """
-    Slice df by calendar date range [date_from, date_to] inclusive.
-    date_from/date_to: YYYY-MM-DD or any pandas-parseable datetime strings.
-    """
+    """Slices DataFrame by date range, handling timezone normalization."""
     if df is None or df.empty:
         return df
     if date_from is None and date_to is None:
@@ -89,10 +85,11 @@ def _slice_date_range(
         raise TypeError("date slicing requires a DatetimeIndex")
 
     start = _parse_date(date_from, tz).normalize() if date_from else df.index.min()
+
     end = (
         _parse_date(date_to, tz).normalize()
         + pd.Timedelta(days=1)
-        - pd.Timedelta(nanoseconds=1)
+        - pd.Timedelta(1, unit="ns")
         if date_to
         else df.index.max()
     )
@@ -101,6 +98,7 @@ def _slice_date_range(
 
 
 def _read_trades_file(path: str) -> pd.DataFrame:
+    """Reads trades from CSV or Parquet."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
@@ -117,7 +115,7 @@ def _read_trades_file(path: str) -> pd.DataFrame:
 def _overlay_cols(
     dst: pd.DataFrame, src: pd.DataFrame, cols: list[str]
 ) -> pd.DataFrame:
-    """Overlay specific columns from src onto dst (no accidental OHLCV overwrite)."""
+    """Merges selected columns from source DataFrame into destination."""
     out = dst.copy()
     for c in cols:
         if c in src.columns:
@@ -125,81 +123,6 @@ def _overlay_cols(
     return out
 
 
-def _dbg_signals(signals: pd.DataFrame) -> None:
-    print("ROWS:", len(signals))
-    must = [
-        "time_window_ok",
-        "or_break_unlock",
-        "unlocked",
-        "in_zone",
-        "trigger_ok",
-        "riskcap_ok",
-        "disqualified_2sigma",
-        "direction",
-        "or_high",
-        "or_low",
-    ]
-    present = [c for c in must if c in signals.columns]
-    print("COLS_PRESENT:", present)
-
-    for c in [
-        "time_window_ok",
-        "or_break_unlock",
-        "unlocked",
-        "in_zone",
-        "trigger_ok",
-        "riskcap_ok",
-    ]:
-        if c in signals.columns:
-            # bool sum is fine; non-bool will error, so guard:
-            s = signals[c]
-            if s.dtype == bool:
-                print(f"{c}: {int(s.sum())}")
-            else:
-                print(f"{c}: present")
-
-    if "direction" in signals.columns:
-        print("direction!=0:", int((signals["direction"] != 0).sum()))
-
-    if "disqualified_2sigma" in signals.columns:
-        s = signals["disqualified_2sigma"]
-        if s.dtype == bool:
-            print("disqualified_2sigma:", int(s.sum()))
-
-    # “final entry candidates” approximation
-    needed = {"direction", "trigger_ok", "time_window_ok", "riskcap_ok"}
-    if needed.issubset(signals.columns):
-        ok = (
-            (signals["direction"] != 0)
-            & signals["trigger_ok"].astype(bool)
-            & signals["time_window_ok"].astype(bool)
-            & signals["riskcap_ok"].astype(bool)
-        )
-        if "disqualified_2sigma" in signals.columns:
-            ok = ok & (~signals["disqualified_2sigma"].astype(bool))
-        print("ENTRY_CANDIDATES:", int(ok.sum()))
-
-    for c in [
-        "micro_break_dir",
-        "engulf_dir",
-        "swing_hi",
-        "swing_lo",
-        "swing_high",
-        "swing_low",
-    ]:
-        if c in signals.columns:
-            s = signals[c]
-            if s.dtype == bool:
-                print(c, "present", "true", int(s.sum()))
-            else:
-                print(c, "present", "nonzero", int((s != 0).sum()))
-        else:
-            print(c, "MISSING")
-
-
-# -----------------------------
-# Pipeline
-# -----------------------------
 def build_feature_frames(
     cfg: Any,
     data_path: str,
@@ -208,7 +131,7 @@ def build_feature_frames(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # 1) Load + optional RTH slice
+    """Pipeline: Load -> Slice -> Features (Refs, VWAP, ATR, Swings) -> Resample."""
     tz = getattr(cfg, "tz", "America/New_York")
     df1 = load_minute_df(data_path, tz=tz)
     df1 = df1.sort_index()
@@ -219,7 +142,6 @@ def build_feature_frames(
     if do_slice_rth:
         df1 = slice_rth(df1)
 
-    # 2) ATR15
     atr = compute_atr15(df1)
     if isinstance(atr, pd.Series):
         df1["atr15"] = atr
@@ -227,12 +149,10 @@ def build_feature_frames(
         for col in atr.columns:
             df1[col] = atr[col]
 
-    # 3) Session refs (overlay only the reference cols we care about)
     refs = compute_session_refs(df1)
     ref_cols = ["or_high", "or_low", "or_height", "pdh", "pdl", "onh", "onl"]
     df1 = _overlay_cols(df1, refs, ref_cols)
 
-    # 4) Session VWAP bands (overlay only)
     bands = compute_session_vwap_bands(df1)
     if isinstance(bands, pd.DataFrame) and not bands.empty:
         mapping = {
@@ -246,7 +166,6 @@ def build_feature_frames(
             if src in bands.columns:
                 df1[dst] = bands[src]
 
-    # 5) 5-minute trend from resampled bars, then broadcast to 1m
     df5 = resample(df1, rule="5min")
     tr5 = trend_5m(df5)
 
@@ -257,7 +176,6 @@ def build_feature_frames(
 
     df1["trend_5m"] = trend_series.reindex(df1.index, method="ffill").fillna(0)
 
-    # 6) 1-minute swings + micro-swing breaks
     swings_1m = find_swings_1m(df1)
     if isinstance(swings_1m, pd.DataFrame):
         if "swing_high" in swings_1m.columns:
@@ -265,7 +183,6 @@ def build_feature_frames(
         if "swing_low" in swings_1m.columns:
             df1["swing_low"] = swings_1m["swing_low"].astype(bool)
 
-        # Also provide aliases some parts of the codebase/tests may use
         if "swing_high" in df1.columns:
             df1["swing_hi"] = df1["swing_high"]
         if "swing_low" in df1.columns:
@@ -278,9 +195,6 @@ def build_feature_frames(
     return df1, df5
 
 
-# -----------------------------
-# Commands
-# -----------------------------
 def cmd_backtest(
     config_path: str,
     data_path: str,
@@ -296,6 +210,7 @@ def cmd_backtest(
     hash_data: bool = False,
     argv: list[str] | None = None,
 ) -> None:
+    """Executes a single standard backtest run."""
     cfg = load_config(config_path)
 
     df1, df5 = build_feature_frames(
@@ -303,8 +218,6 @@ def cmd_backtest(
     )
 
     signals = generate_signals(df1, df5, cfg)
-    if debug_signals:
-        _dbg_signals(signals)
 
     trades = simulate_trades(df1, signals, cfg)
     summary = compute_summary(trades)
@@ -313,7 +226,6 @@ def cmd_backtest(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
-    # artifacts
     _write_json(root / "summary.json", summary)
 
     meta = build_run_meta(
@@ -327,7 +239,6 @@ def cmd_backtest(
         seed=seed,
         hash_data=hash_data,
     )
-    # add command-specific fields
     meta.update(
         {
             "date_from": date_from,
@@ -366,6 +277,7 @@ def cmd_walkforward(
     hash_data: bool = False,
     argv: list[str] | None = None,
 ) -> None:
+    """Executes rolling walk-forward analysis (IS/OOS)."""
     cfg = load_config(config_path)
 
     df1, df5 = build_feature_frames(
@@ -373,18 +285,17 @@ def cmd_walkforward(
     )
 
     def _wf_backtest_fn(
-        df1_in: pd.DataFrame,
-        df5_in: pd.DataFrame | None,
-        cfg_in: Any | None,
+        df1: pd.DataFrame,
+        df5: pd.DataFrame | None,
+        cfg: Any | None,
         *,
         params: dict[str, Any] | None,
         regime: str,
         window_id: int,
     ) -> pd.DataFrame:
-        # Week 5: no tuning yet -> params ignored.
         _ = params, regime, window_id
-        sig = generate_signals(df1_in, df5_in, cfg_in)
-        return simulate_trades(df1_in, sig, cfg_in)
+        sig = generate_signals(df1, df5, cfg)
+        return simulate_trades(df1, sig, cfg)
 
     out = rolling_walkforward_frames(
         df1,
@@ -409,7 +320,6 @@ def cmd_walkforward(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
-    # artifacts
     _write_json(root / "summary.json", overall_oos)
 
     meta = build_run_meta(
@@ -436,11 +346,9 @@ def cmd_walkforward(
     )
     write_run_meta(root, meta)
 
-    # summaries
     is_summary.to_csv(root / "is_summary.csv", index=False)
     oos_summary.to_csv(root / "oos_summary.csv", index=False)
 
-    # optional artifacts
     if write_equity:
         wf_equity.to_parquet(root / "wf_equity.parquet", index=False)
 
@@ -466,8 +374,11 @@ def cmd_mc(
     hash_data: bool = False,
     argv: list[str] | None = None,
 ) -> None:
+    """Executes Monte Carlo simulation on an existing trades file."""
     cfg = load_config(config_path)
 
+    if not isinstance(trades_path, str):
+        raise TypeError("trades_path must be a string path")
     trades = _read_trades_file(trades_path)
 
     out = mc_simulate_R(
@@ -497,7 +408,7 @@ def cmd_mc(
         outputs_dir=root,
         config_path=config_path,
         config_obj=cfg,
-        data_path=trades_path,  # MC input is trades file
+        data_path=trades_path,
         seed=seed,
         hash_data=hash_data,
     )
@@ -730,11 +641,15 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd in ("monte-carlo", "run-mc"):
-        # alias uses --trades (dest=trades_file); primary uses --trades-file
-        trades_file = getattr(args, "trades_file", None)
+        # Explicit check for trades_file presence before passing
+        trades_file_arg = getattr(args, "trades_file", None)
+        if not isinstance(trades_file_arg, str):
+            # This path should be blocked by argparse required=True, but satisfies mypy
+            raise ValueError("trades_file is required")
+
         cmd_mc(
             args.config,
-            trades_file,
+            trades_file_arg,
             out_dir=args.out_dir,
             run_id=args.run_id,
             n_paths=int(args.n_paths),

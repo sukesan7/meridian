@@ -1,13 +1,35 @@
-# Create Pre-Commit rules for coding etequitte
+# Pre-Commit Config
+# Optimized for Speed, Safety, and Strict Typing
+
 repos:
+    # 1. Fast Linting & Formatting (Replaces Black & Flake8)
     - repo: https://github.com/astral-sh/ruff-pre-commit
       rev: v0.6.9
-      hooks: [{ id: ruff, args: ["--fix"] }, { id: ruff-format }]
-    - repo: https://github.com/psf/black
-      rev: 24.10.0
-      hooks: [{ id: black }]
+      hooks:
+          - id: ruff
+            args: ["--fix"]
+          - id: ruff-format
+
+    # 2. Basic File Integrity & Data Safety
     - repo: https://github.com/pre-commit/pre-commit-hooks
       rev: v4.6.0
       hooks:
           - id: end-of-file-fixer
           - id: trailing-whitespace
+          - id: check-yaml
+          - id: check-toml
+          - id: check-added-large-files
+            args: ["--maxkb=500"]
+          - id: debug-statements
+
+    # 3. Strict Type Checking (Local)
+    - repo: local
+      hooks:
+          - id: mypy
+            name: mypy
+            entry: mypy
+            language: system
+            types: [python]
+            require_serial: true
+            # Run only on source and tests, ignore scripts/docs
+            files: ^(s3a_backtester|tests)/

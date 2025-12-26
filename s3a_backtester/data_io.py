@@ -1,22 +1,20 @@
-# Data Input / Output
-# Achieve a clean time-series dataframe
+"""
+Data IO Layer
+-------------
+Robust loading, validation, and normalization of OHLCV data.
+Supports CSV/Parquet formats, timezone localization, and strict RTH slicing.
+"""
+
 from __future__ import annotations
+from typing import cast, Any
 from pandas.api.types import DatetimeTZDtype
 import pandas as pd
 
-# Set required columns
 REQ_COLS = ("open", "high", "low", "close", "volume")
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
-    """
-    Load 1-minute OHLCV (CSV or Parquet) and normalize:
-
-    - Returns tz-aware DatetimeIndex in `tz` (default ET).
-    - Accepts timestamp either as a column (timestamp/datetime/ts_event/etc) OR as the index.
-    - Requires open, high, low, close, volume.
-    """
-
+    """Loads a 1-minute OHLCV file, ensuring correct indexing and required columns."""
     if path.lower().endswith(".parquet"):
         df = pd.read_parquet(path)
     else:
@@ -24,11 +22,9 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
 
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # 1) If index is already datetime, use it
     if isinstance(df.index, pd.DatetimeIndex):
         idx = df.index
     else:
-        # 2) Otherwise find a datetime column
         dt_col = None
         for c in ("ts_event", "datetime", "timestamp", "time", "date"):
             if c in df.columns:
@@ -42,10 +38,6 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
 
         s = df[dt_col]
 
-        # Parse with minimal ambiguity:
-        # - If dtype already tz-aware -> keep
-        # - If strings look like UTC/offset -> parse as UTC
-        # - Else parse naive and localize to `tz`
         if isinstance(s.dtype, DatetimeTZDtype):
             idx = pd.DatetimeIndex(s)
         else:
@@ -59,14 +51,13 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
             else:
                 idx = pd.DatetimeIndex(pd.to_datetime(s, errors="coerce"))
 
-        if idx.isna().any():
+        if bool(pd.isna(idx).any()):
             raise ValueError(
                 f"load_minute_df: datetime parse failed for {dt_col!r} in {path!r}"
             )
 
         df = df.drop(columns=[dt_col])
 
-    # Convert/localize timezone
     if idx.tz is None:
         idx = idx.tz_localize(tz)
     else:
@@ -74,7 +65,6 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
 
     df.index = idx
 
-    # Enforce OHLCV contract
     missing = set(REQ_COLS) - set(df.columns)
     if missing:
         raise ValueError(
@@ -82,20 +72,17 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
             f"got columns={list(df.columns)}"
         )
 
-    # Clean index
     df = df[~df.index.duplicated(keep="last")].sort_index()
     return df
 
 
-# Regular Trading Hours
 def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep US RTH 09:30–16:00 ET (inclusive)."""
+    """Filters data for US Regular Trading Hours (09:30 - 16:00 ET)."""
     return df.between_time("09:30", "16:00", inclusive="both")
 
 
-# Resample the data
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
-    """Right-label/right-closed resample (no peeking)."""
+    """Resamples 1-minute data to higher timeframes with 'right' labeling."""
     agg = {
         "open": "first",
         "high": "max",
@@ -103,4 +90,9 @@ def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
         "close": "last",
         "volume": "sum",
     }
-    return df1.resample(rule, label="right", closed="right").agg(agg).dropna(how="all")
+    return cast(
+        pd.DataFrame,
+        df1.resample(rule, label="right", closed="right")
+        .agg(cast(Any, agg))
+        .dropna(how="all"),
+    )

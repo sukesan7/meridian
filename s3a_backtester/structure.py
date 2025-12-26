@@ -1,7 +1,14 @@
+"""
+Market Structure Analysis
+-------------------------
+Implements vector-based logic for identifying higher-order market structures.
+Includes 5-minute trend detection, micro-swing identification, and candlestick patterns.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -10,18 +17,7 @@ import pandas as pd
 @dataclass
 class Trend5mConfig:
     """
-    Configuration for 5-minute trend detection.
-
-    Attributes
-    ----------
-    lookback : int
-        Number of prior 5-minute bars to use when comparing highs/lows.
-        Higher = slower, smoother trend. Must be >= 1.
-    high_col, low_col, close_col : str
-        Column names for OHLC data.
-    vwap_col : str
-        Column name for session VWAP. If missing in the DataFrame,
-        the VWAP-side check will be skipped.
+    Configuration for 5-minute trend detection logic.
     """
 
     lookback: int = 3
@@ -31,41 +27,27 @@ class Trend5mConfig:
     vwap_col: str = "vwap"
 
 
-# ------------------------------------
-# Compute intraday HH/HL vs LH/LL trend for a singular trading day
-# ------------------------------------
 def _trend_for_day(
     day: pd.DataFrame, cfg: Trend5mConfig
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """
-    Returns
-    -------
-    trend : Series[int]
-        +1 uptrend, -1 downtrend, 0 neutral.
-    hh_hl : Series[bool]
-        True on bars where we see HH & HL vs the rolling window.
-    lh_ll : Series[bool]
-        True on bars where we see LH & LL vs the rolling window.
-    """
+    """Compute trend direction, HH/HL status, and LH/LL status for a single day."""
     h = day[cfg.high_col]
     lo = day[cfg.low_col]
 
-    # Previous highs/lows based only on *past* bars (no look-ahead)
     prev_high = h.shift(1).rolling(cfg.lookback, min_periods=cfg.lookback).max()
     prev_low = lo.shift(1).rolling(cfg.lookback, min_periods=cfg.lookback).min()
 
-    # Structural comparisons
-    hh = h > prev_high  # higher high
-    hl = lo > prev_low  # higher low
-    lh = h < prev_high  # lower high
-    ll = lo < prev_low  # lower low
+    hh = h > prev_high
+    hl = lo > prev_low
+    lh = h < prev_high
+    ll = lo < prev_low
 
     up_mask = hh & hl
     down_mask = lh & ll
 
     trend_vals = np.zeros(len(day), dtype=int)
 
-    for i, idx in enumerate(day.index):
+    for i in range(len(day)):
         if i == 0:
             trend_vals[i] = 0
             continue
@@ -75,7 +57,6 @@ def _trend_for_day(
         elif down_mask.iloc[i] and not up_mask.iloc[i]:
             trend_vals[i] = -1
         else:
-            # carry the prior state when structure is ambiguous
             trend_vals[i] = trend_vals[i - 1]
 
     trend = pd.Series(trend_vals, index=day.index, name="trend_5m")
@@ -84,30 +65,9 @@ def _trend_for_day(
     return trend, hh_hl, lh_ll
 
 
-# ------------------------------------
-# 5-minute bar Trend Direction
-# ------------------------------------
 def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.DataFrame:
     """
-    Parameters
-    ----------
-    df_5m : DataFrame
-        5-minute OHLCV data, already RTH-sliced (e.g. 09:30-16:00 ET),
-        index is tz-aware datetime. Must contain columns for high/low/close.
-        If a VWAP column is present (cfg.vwap_col), we also add a VWAP-side flag.
-    cfg : Trend5mConfig, optional
-        Optional configuration; if omitted, uses Trend5mConfig() defaults.
-
-    Returns
-    -------
-    DataFrame
-        A copy of ``df_5m`` with extra columns:
-
-        - ``trend_5m``        : +1 uptrend, -1 downtrend, 0 neutral.
-        - ``trend_hh_hl``     : True where bar forms HH&HL vs rolling window.
-        - ``trend_lh_ll``     : True where bar forms LH&LL vs rolling window.
-        - ``trend_vwap_ok``   : True when bar closes on the "correct" side of
-                                VWAP for the current trend (False if no VWAP).
+    Calculate 5-minute trend direction over the provided OHLCV data.
     """
     if cfg is None:
         cfg = Trend5mConfig()
@@ -118,8 +78,9 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
     hh_hl = pd.Series(False, index=out.index, name="trend_hh_hl")
     lh_ll = pd.Series(False, index=out.index, name="trend_lh_ll")
 
-    # Work per trading day to avoid look-through across sessions
-    for _, day in out.groupby(out.index.normalize()):
+    idx = cast(pd.DatetimeIndex, out.index)
+
+    for _, day in out.groupby(idx.normalize()):
         day_trend, day_hh_hl, day_lh_ll = _trend_for_day(day, cfg)
         trend.loc[day.index] = day_trend
         hh_hl.loc[day.index] = day_hh_hl
@@ -129,12 +90,10 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
     out["trend_hh_hl"] = hh_hl
     out["trend_lh_ll"] = lh_ll
 
-    # VWAP-side check: only if VWAP column is present
     if cfg.vwap_col in out.columns:
         vwap = out[cfg.vwap_col]
         close = out[cfg.close_col]
 
-        # Correct side: uptrend → close >= vwap; downtrend → close <= vwap
         side_ok = np.where(
             trend > 0,
             close >= vwap,
@@ -142,51 +101,18 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
         )
         out["trend_vwap_ok"] = side_ok.astype(bool)
     else:
-        # If we don't have VWAP yet, just set False; engine can decide how to use it
         out["trend_vwap_ok"] = False
 
     return out
 
 
-# ------------------------------------
-# 1-minute Bar Tagging (engulfing candle detection)
-# ------------------------------------
 def micro_swing_break(
     df: pd.DataFrame,
     swing_high_col: str = "swing_high",
     swing_low_col: str = "swing_low",
 ) -> pd.DataFrame:
     """
-    Parameters
-    ----------
-    df :
-        1-minute OHLCV dataframe. Must contain at least:
-        - 'open', 'high', 'low', 'close'
-        - boolean swing marker columns:
-          * swing_high_col (default 'swing_high')
-          * swing_low_col  (default 'swing_low')
-        Typically these come from `features.find_swings_1m`.
-
-    Returns
-    -------
-    out : pd.DataFrame
-        Index matches `df.index` with columns:
-
-        - ``micro_break_dir`` : int in {-1, 0, 1}
-            +1  → current bar breaks the most recent swing high
-            -1  → current bar breaks the most recent swing low
-             0  → no break
-
-        - ``engulf_dir`` : int in {-1, 0, 1}
-            +1  → bullish engulf vs previous bar
-            -1  → bearish engulf vs previous bar
-             0  → no engulf
-
-    Notes
-    -----
-    - No look-ahead: only information up to the current bar is used.
-    - If both an up-break and down-break would trigger on the same bar
-      (pathological), up-break wins; this is extremely rare on 1-min data.
+    Identify micro-structure breaks (BOS) and engulfing candles on 1-minute data.
     """
     required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
@@ -212,8 +138,8 @@ def micro_swing_break(
 
     last_swing_high = np.nan
     last_swing_low = np.nan
-    high_broken = False  # check if current swing high is broken
-    low_broken = False  # check if current swing low is broken
+    high_broken = False
+    low_broken = False
 
     for i in range(n):
         if swing_high[i]:
@@ -240,21 +166,17 @@ def micro_swing_break(
             micro_dir[i] = -1
             low_broken = True
 
-    # -------- Engulf detection (body engulf of previous bar) --------
     op = df["open"]
     cl = df["close"]
     prev_op = op.shift(1)
     prev_cl = cl.shift(1)
 
-    # Previous bar must exist
     has_prev = prev_op.notna() & prev_cl.notna()
 
-    # Bullish engulf: previous red, current green, current body fully contains previous body
     bull = (
         has_prev & (prev_cl < prev_op) & (cl > op) & (op <= prev_cl) & (cl >= prev_op)
     )
 
-    # Bearish engulf: previous green, current red, current body fully contains previous body
     bear = (
         has_prev & (prev_cl > prev_op) & (cl < op) & (op >= prev_cl) & (cl <= prev_op)
     )

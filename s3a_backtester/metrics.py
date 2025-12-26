@@ -1,4 +1,10 @@
-# Metrics for 3A
+"""
+Performance Metrics
+-------------------
+Calculates standardized trading metrics (R-multiples, SQN, Drawdown).
+Includes grouping helpers for slicing performance by time or market regime.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -7,40 +13,34 @@ import pandas as pd
 import numpy as np
 
 
-# ----------------------------
-# Core helpers
-# ----------------------------
-def _realized_r(trades: pd.DataFrame) -> pd.Series:
-    """Return realized_R as a clean float series (NaNs -> 0)."""
+def _realized_r(trades: pd.DataFrame | None) -> pd.Series:
+    """Extracts realized_R as a float Series, handling missing values."""
     if trades is None or len(trades) == 0 or "realized_R" not in trades.columns:
         return pd.Series(dtype=float)
     r = pd.to_numeric(trades["realized_R"], errors="coerce").fillna(0.0)
     return r
 
 
-def _to_dt(trades: pd.DataFrame, col: str) -> pd.Series:
-    """Best-effort datetime parsing for a column."""
+def _to_dt(trades: pd.DataFrame | None, col: str) -> pd.Series:
+    """Parses a column to datetime, returning empty series on failure."""
     if trades is None or col not in trades.columns or len(trades) == 0:
         return pd.Series(dtype="datetime64[ns]")
     return pd.to_datetime(trades[col], errors="coerce")
 
 
-# ----------------------------
-# Equity + DD in R-space
-# ----------------------------
 def equity_curve_R(trades: pd.DataFrame) -> pd.Series:
-    """Cumulative R equity curve (trade-by-trade)."""
+    """Computes the cumulative equity curve in R-units."""
     r = _realized_r(trades)
     return r.cumsum()
 
 
-def max_drawdown_R(curve: pd.Series) -> float:
-    """Max drawdown of an equity curve in R units, anchored at 0."""
+def max_drawdown_R(curve: pd.Series | None) -> float:
+    """Calculates the maximum drawdown of an R-unit equity curve."""
     if curve is None or len(curve) == 0:
         return 0.0
 
     values = pd.to_numeric(curve, errors="coerce").fillna(0.0).to_numpy()
-    values = np.concatenate(([0.0], values))  # anchor at 0
+    values = np.concatenate(([0.0], values))
 
     roll_max = np.maximum.accumulate(values)
     dd = roll_max - values
@@ -48,18 +48,15 @@ def max_drawdown_R(curve: pd.Series) -> float:
 
 
 def sqn(trades: pd.DataFrame) -> float:
-    """System Quality Number (Van Tharp): mean(R)/std(R) * sqrt(n)."""
+    """Calculates System Quality Number (Van Tharp)."""
     r = _realized_r(trades)
     if len(r) < 2 or r.std(ddof=0) == 0:
         return 0.0
     return float(r.mean() / r.std(ddof=0) * (len(r) ** 0.5))
 
 
-# ----------------------------
-# Summary API
-# ----------------------------
 def trades_per_month(trades: pd.DataFrame) -> float:
-    """Average trades/month over months that actually have trades."""
+    """Calculates average trade frequency per active month."""
     dt = _to_dt(trades, "entry_time")
     if len(dt) == 0:
         return 0.0
@@ -72,9 +69,7 @@ def trades_per_month(trades: pd.DataFrame) -> float:
 
 
 def summary(trades: pd.DataFrame) -> dict[str, Any]:
-    """
-    Single-run summary stats from a normalized trade log.
-    """
+    """Generates a comprehensive statistical summary of the trade log."""
     r = _realized_r(trades)
     n = int(len(r))
 
@@ -105,9 +100,9 @@ def summary(trades: pd.DataFrame) -> dict[str, Any]:
         "trades": n,
         "win_rate": wr,
         "avg_R": avg_R,
-        "expectancy_R": avg_R,  # explicit alias: expectancy in R
+        "expectancy_R": avg_R,
         "avg_win_R": float(wins.mean()) if len(wins) else 0.0,
-        "avg_loss_R": float(losses.mean()) if len(losses) else 0.0,  # negative
+        "avg_loss_R": float(losses.mean()) if len(losses) else 0.0,
         "sum_R": float(r.sum()),
         "maxDD_R": float(mdd),
         "SQN": float(sqn(trades)),
@@ -115,14 +110,11 @@ def summary(trades: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-# Backwards-compatability: Week 1-4 code uses compute_summary()
 def compute_summary(trades: pd.DataFrame) -> dict[str, Any]:
+    """Alias for summary() to maintain compatibility."""
     return summary(trades)
 
 
-# ----------------------------
-# Grouped summaries
-# ----------------------------
 def _add_time_parts(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or len(df) == 0:
         return df
@@ -157,7 +149,7 @@ def _add_or_quartile(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def grouped_summary(trades: pd.DataFrame, by: str) -> pd.DataFrame:
-    """Compute per-group summary(trades) for a grouping key."""
+    """Computes summary statistics grouped by a specific column."""
     if trades is None or len(trades) == 0:
         return pd.DataFrame()
 
@@ -176,15 +168,3 @@ def grouped_summary(trades: pd.DataFrame, by: str) -> pd.DataFrame:
 
     out = pd.DataFrame(rows).set_index(by)
     return out.sort_index()
-
-
-# Legacy function kept, still useful for quick aggregations
-def group_stats(trades: pd.DataFrame, by: str) -> pd.DataFrame:
-    """Legacy simple aggregation: count/mean/sum of realized_R."""
-    if trades is None or by not in trades.columns or len(trades) == 0:
-        return pd.DataFrame(columns=["trades", "avg_R", "sum_R"])
-    r = _realized_r(trades)
-    df = trades.copy()
-    df["realized_R"] = r
-    out = df.groupby(by)["realized_R"].agg(["count", "mean", "sum"])
-    return out.rename(columns={"count": "trades", "mean": "avg_R", "sum": "sum_R"})
