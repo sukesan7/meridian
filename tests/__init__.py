@@ -1,1 +1,6 @@
-# Initialize file to set directory readable. Used to set tests as a package and for importing.
+"""
+Meridian Test Suite
+-------------------
+This package contains unit and integration tests for the Meridian core engine.
+Tests are structured to mirror the source code modules.
+"""

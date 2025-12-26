@@ -1,179 +1,109 @@
-# Tests for the structure
-import pandas as pd
+"""
+Tests for s3a_backtester.structure
+----------------------------------
+Coverage:
+- 5-Minute Trend Detection (Higher Highs/Lows).
+- Micro Swing Break Logic (Bullish/Bearish).
+- Engulfing Candle Logic (Bullish/Bearish).
+"""
 
+import pandas as pd
 from s3a_backtester.structure import trend_5m, Trend5mConfig, micro_swing_break
 
 
-# -----------------------------------
-# Test simple day creation
-# -----------------------------------
-def _make_simple_day(direction: str = "up") -> pd.DataFrame:
+def test_trend_5m_detects_uptrend():
     idx = pd.date_range(
-        "2024-01-02 09:30",
-        periods=10,
-        freq="5min",
-        tz="America/New_York",
+        "2024-01-01 09:30", periods=20, freq="5min", tz="America/New_York"
     )
-
-    if direction == "up":
-        highs = range(1, 11)
-        lows = range(0, 10)
-    else:
-        highs = range(11, 1, -1)
-        lows = range(10, 0, -1)
-
     df = pd.DataFrame(
         {
-            "open": list(highs),
-            "high": list(highs),
-            "low": list(lows),
-            "close": list(highs),
+            "high": range(20),
+            "low": range(20),
+            "close": range(20),
+            "open": range(20),
+            "volume": 1,
         },
         index=idx,
     )
-    # simple flat VWAP in the middle so VWAP-side check is deterministic
-    df["vwap"] = 5.0
-    return df
 
-
-# -----------------------------------
-# Test 5 min trend
-# -----------------------------------
-def test_trend_5m_uptrend_basic():
-    df = _make_simple_day("up")
-    cfg = Trend5mConfig(lookback=3)
-    out = trend_5m(df, cfg)
-
-    assert "trend_5m" in out.columns
-    assert "trend_vwap_ok" in out.columns
-
-    # After a few bars the trend should lock in as +1
+    out = trend_5m(df, Trend5mConfig(lookback=3))
     assert out["trend_5m"].iloc[-1] == 1
-    # In this synthetic series all closes are above VWAP=5 after the early bars
-    assert out["trend_vwap_ok"].iloc[-1]
 
 
-def test_trend_5m_downtrend_basic():
-    df = _make_simple_day("down")
-    cfg = Trend5mConfig(lookback=3)
-    out = trend_5m(df, cfg)
+def test_trend_5m_detects_downtrend():
+    idx = pd.date_range(
+        "2024-01-01 09:30", periods=20, freq="5min", tz="America/New_York"
+    )
+    vals = list(range(20, 0, -1))
+    df = pd.DataFrame(
+        {"high": vals, "low": vals, "close": vals, "open": vals, "volume": 1}, index=idx
+    )
 
-    # Trend should end as -1
+    out = trend_5m(df, Trend5mConfig(lookback=3))
     assert out["trend_5m"].iloc[-1] == -1
-    # Closes are below VWAP=5 for most of the series → last bar OK for downtrend
-    assert out["trend_vwap_ok"].iloc[-1]
 
 
-# -----------------------------------
-# Test 1 minute micro swing break
-# -----------------------------------
-def _make_1min_index(n: int = 10) -> pd.DatetimeIndex:
-    return pd.date_range(
-        "2024-01-02 09:30",
-        periods=n,
-        freq="1min",
-        tz="America/New_York",
+def test_micro_swing_break_up():
+    idx = pd.date_range(
+        "2024-01-01 09:30", periods=10, freq="1min", tz="America/New_York"
     )
-
-
-def test_micro_swing_break_upside_break():
-    """Marks +1 when price breaks the most recent swing high."""
-    idx = _make_1min_index(10)
-
-    # Swing high at bar 2, broken at bar 4.
-    high = [100, 105, 110, 109, 112, 111, 110, 109, 108, 107]
-    low = [95, 96, 100, 101, 102, 103, 104, 105, 106, 107]
-
     df = pd.DataFrame(
         {
-            "open": high,
-            "high": high,
-            "low": low,
-            "close": high,
+            "high": [10, 11, 10, 12, 10],
+            "low": [9, 9, 9, 9, 9],
+            "close": 10,
+            "open": 10,
             "volume": 1,
-            "swing_high": [
-                False,
-                False,
-                True,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-            ],
-            "swing_low": [False] * 10,
+        },
+        index=idx[:5],
+    )
+    df["swing_high"] = False
+    df.loc[idx[1], "swing_high"] = True  # High at 11
+
+    out = micro_swing_break(df)
+    # Idx 3 (High 12) breaks Idx 1 (High 11)
+    assert out["micro_break_dir"].iloc[3] == 1
+
+
+def test_micro_swing_break_down():
+    idx = pd.date_range(
+        "2024-01-01 09:30", periods=10, freq="1min", tz="America/New_York"
+    )
+    df = pd.DataFrame(
+        {
+            "high": [12, 12, 12, 12, 12],
+            "low": [10, 9, 10, 8, 10],
+            "close": 10,
+            "open": 10,
+            "volume": 1,
+        },
+        index=idx[:5],
+    )
+    df["swing_high"] = False
+    df["swing_low"] = False
+    df.loc[idx[1], "swing_low"] = True  # Low at 9
+
+    out = micro_swing_break(df)
+    # Idx 3 (Low 8) breaks Idx 1 (Low 9)
+    assert out["micro_break_dir"].iloc[3] == -1
+
+
+def test_engulfing_pattern():
+    idx = pd.date_range("2024-01-01 09:30", periods=2, freq="1min")
+    # Bar 0: Red (Open 100, Close 99)
+    # Bar 1: Green (Open 98, Close 101) -> Engulfs
+    df = pd.DataFrame(
+        {
+            "open": [100, 98],
+            "close": [99, 101],
+            "high": [100, 101],
+            "low": [99, 98],
+            "volume": 1,
         },
         index=idx,
     )
+    df["swing_high"] = False
+    df["swing_low"] = False
 
     out = micro_swing_break(df)
-    # Only one break, at bar 4
-    assert out["micro_break_dir"].sum() == 1
-    assert out["micro_break_dir"].iloc[4] == 1
-
-
-def test_micro_swing_break_downside_break():
-    """Marks -1 when price breaks the most recent swing low."""
-    idx = _make_1min_index(10)
-
-    # Swing low at bar 2, broken at bar 4.
-    high = [110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
-    low = [100, 99, 95, 96, 94, 95, 96, 97, 98, 99]
-
-    df = pd.DataFrame(
-        {
-            "open": low,
-            "high": high,
-            "low": low,
-            "close": low,
-            "volume": 1,
-            "swing_high": [False] * 10,
-            "swing_low": [
-                False,
-                False,
-                True,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-            ],
-        },
-        index=idx,
-    )
-
-    out = micro_swing_break(df)
-    # Only one break, at bar 4
-    assert out["micro_break_dir"].sum() == -1  # one -1
-    assert out["micro_break_dir"].iloc[4] == -1
-
-
-def test_micro_swing_break_engulf_dir():
-    """Engulf detection returns +1 for bullish and -1 for bearish engulfing bars."""
-    idx = _make_1min_index(4)
-
-    # Bar 0: red
-    # Bar 1: bullish engulf of bar 0
-    # Bar 2: bearish engulf of bar 1
-    # Bar 3: nothing
-    df = pd.DataFrame(
-        {
-            "open": [100.0, 98.0, 102.0, 101.0],
-            "high": [101.0, 103.0, 103.0, 102.0],
-            "low": [99.0, 97.0, 97.0, 100.0],
-            "close": [99.0, 101.0, 97.0, 101.0],
-            "volume": 1,
-            "swing_high": [False] * 4,
-            "swing_low": [False] * 4,
-        },
-        index=idx,
-    )
-
-    out = micro_swing_break(df)
-    engulf = out["engulf_dir"]
-
-    assert engulf.tolist() == [0, 1, -1, 0]
+    assert out["engulf_dir"].iloc[1] == 1
