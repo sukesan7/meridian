@@ -1,17 +1,23 @@
-# scripts/profile_run.py
 """
-Profile Meridian commands with cProfile and emit:
-- .prof binary (for pstats/snakeviz)
-- profile.txt (top functions)
-- timing.json (wall time + argv)
+Script: Performance Profiler
+Purpose: Wraps any Meridian CLI command with cProfile to identify latency bottlenecks.
+
+Description:
+    Executes the target command (backtest/walkforward) with instrumentation enabled.
+    Outputs a binary '.prof' file (visualizable with SnakeViz) and a text summary
+    of the top N most expensive function calls.
 
 Usage:
-  python scripts/profile_run.py --out outputs/profiles/nq_12m_bt.prof --top 50 -- \
-    backtest --config configs/base.yaml --data <file> --from YYYY-MM-DD --to YYYY-MM-DD --run-id prof_bt
+    python scripts/profile_run.py --out outputs/profiles/bt.prof --top 50 -- \
+        backtest --config configs/base.yaml ...
+
+Arguments:
+    --out  : Path to save the binary profile.
+    --top  : Number of rows to print in the text summary.
+    --     : Separator. All arguments after '--' are passed to the Meridian CLI.
 """
 
 from __future__ import annotations
-
 import argparse
 import cProfile
 import io
@@ -19,7 +25,6 @@ import json
 import pstats
 import time
 from pathlib import Path
-
 from s3a_backtester.cli import main as cli_main
 
 

@@ -1,9 +1,19 @@
-# Script to make a synthetic parquet so quickstart works without Databento
-from __future__ import annotations
+"""
+Script: Synthetic Data Generator
+Purpose: Creates deterministic OHLCV Parquet files for unit testing.
 
+Description:
+    Generates a Brownian Motion random walk with drift to simulate price action.
+    Strictly conforms to the Meridian Data Contract (RTH 09:30-16:00 ET).
+    Used by 'quickstart.sh' to allow running the engine without API keys.
+
+Usage:
+    python scripts/make_synth_parquet.py --out data/sample/synth.parquet --days 3
+"""
+
+from __future__ import annotations
 import argparse
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
