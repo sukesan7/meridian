@@ -1,4 +1,10 @@
-# Portfolio for equity curve, maxDD%, and CAGR helpers
+"""
+Portfolio Utilities
+-------------------
+Calculates equity curves, compounding growth (CAGR), and drawdowns
+from a series of trade returns (R).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,11 +27,8 @@ def equity_curve_from_r(
     start_equity: float = 1.0,
 ) -> np.ndarray:
     """
-    Convert an R-series into an equity curve using simple compounding:
-
-        equity_{t+1} = equity_t * (1 + risk_per_trade * R_t)
-
-    If (1 + risk_per_trade * R_t) <= 0 at any step, equity is set to 0 from that point onward.
+    Computes an equity curve using fixed fractional position sizing.
+    Formula: Equity_{t+1} = Equity_t * (1 + risk * R_t)
     """
     r = np.asarray(r, dtype=float)
     n = int(r.size)
@@ -44,17 +47,12 @@ def equity_curve_from_r(
 
 
 def max_drawdown_pct(equity: np.ndarray) -> float:
-    """
-    Max drawdown in percentage terms, computed as:
-
-        max_t (peak_t - equity_t) / peak_t
-    """
+    """Calculates the maximum percentage drawdown from peak equity."""
     equity = np.asarray(equity, dtype=float)
     if equity.size <= 1:
         return 0.0
 
     peak = np.maximum.accumulate(equity)
-    # Avoid division by zero: if peak is 0, drawdown is defined as 0
     with np.errstate(divide="ignore", invalid="ignore"):
         dd = np.where(peak > 0.0, (peak - equity) / peak, 0.0)
 
@@ -70,12 +68,7 @@ def cagr_from_equity(
     *,
     years: float,
 ) -> float:
-    """
-    CAGR = (end/start)^(1/years) - 1
-
-    - If end_equity <= 0: treat as a total loss => CAGR = -1.0
-    - If years <= 0: invalid => raise
-    """
+    """Calculates Compound Annual Growth Rate."""
     if years <= 0.0:
         raise ValueError("years must be > 0")
     if end_equity <= 0.0:
@@ -93,6 +86,7 @@ def path_stats_from_r(
     years: float,
     start_equity: float = 1.0,
 ) -> PathStats:
+    """Aggregates portfolio stats for a single simulation path."""
     eq = equity_curve_from_r(
         r, risk_per_trade=risk_per_trade, start_equity=start_equity
     )

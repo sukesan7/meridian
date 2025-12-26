@@ -1,4 +1,10 @@
-# Walkforward for IS/OOS
+"""
+Walk-Forward Engine
+-------------------
+Implements rolling window analysis (In-Sample / Out-of-Sample).
+Ensures zero data leakage between training and testing periods.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,10 +36,6 @@ class WFWindow:
 
 
 def _normalize_sessions_from_index(df: pd.DataFrame) -> pd.DatetimeIndex:
-    """
-    Extract unique session days (normalized midnight timestamps) from df.index.
-    Assumes df.index is a DatetimeIndex.
-    """
     if df is None or len(df) == 0:
         return pd.DatetimeIndex([])
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -42,7 +44,6 @@ def _normalize_sessions_from_index(df: pd.DataFrame) -> pd.DatetimeIndex:
     idx = df.index
     idx = idx.sort_values()
     sessions = pd.to_datetime(idx).normalize()
-    # Preserve order of appearance (df is already sorted)
     uniq = pd.Index(pd.unique(sessions))
     return pd.DatetimeIndex(uniq)
 
@@ -66,12 +67,6 @@ def iter_rolling_windows(
     oos_days: int,
     step: int | None = None,
 ) -> list[WFWindow]:
-    """
-    Generate rolling windows:
-      - IS window length = is_days sessions
-      - OOS window length = oos_days sessions
-      - step defaults to oos_days (non-overlapping OOS windows)
-    """
     if is_days <= 0 or oos_days <= 0:
         raise ValueError("is_days and oos_days must be > 0")
 
@@ -97,7 +92,6 @@ def iter_rolling_windows(
 
 
 def _timestamp_col(trades: pd.DataFrame) -> str:
-    # Prefer exit_time for equity steps; fallback to entry_time.
     if "exit_time" in trades.columns:
         return "exit_time"
     if "entry_time" in trades.columns:
@@ -122,20 +116,6 @@ def rolling_walkforward_frames(
         | None
     ) = None,
 ) -> dict[str, pd.DataFrame]:
-    """
-    Run rolling walk-forward using a provided backtest function.
-
-    Returns a dict of:
-      - is_summary: per-window IS summary rows
-      - oos_summary: per-window OOS summary rows
-      - wf_equity: labeled OOS equity curve steps (timestamp, equity_R, window_id, regime)
-      - is_trades: concatenated IS trades with window_id/regime
-      - oos_trades: concatenated OOS trades with window_id/regime
-
-    Parameter bleed prevention:
-      - if tune_fn is provided, it must use ONLY IS data/trades to produce params
-      - those params are passed to OOS and not modified afterward
-    """
     if run_backtest_fn is None:
         raise ValueError("run_backtest_fn is required")
 
@@ -158,97 +138,98 @@ def rolling_walkforward_frames(
         is_df5 = _slice_by_sessions(df5, w.is_sessions) if df5 is not None else None
         oos_df5 = _slice_by_sessions(df5, w.oos_sessions) if df5 is not None else None
 
-        # IS run
-        is_trades = run_backtest_fn(
-            is_df1,
-            is_df5,
-            cfg,
-            params=None,
-            regime="IS",
-            window_id=w.window_id,
-        )
-        is_trades = is_trades.copy()
-        is_trades["window_id"] = w.window_id
-        is_trades["regime"] = "IS"
-        is_trades_all.append(is_trades)
+        if is_df1 is not None:
+            is_trades = run_backtest_fn(
+                is_df1,
+                is_df5,
+                cfg,
+                params=None,
+                regime="IS",
+                window_id=w.window_id,
+            )
+            is_trades = is_trades.copy()
+            is_trades["window_id"] = w.window_id
+            is_trades["regime"] = "IS"
+            is_trades_all.append(is_trades)
 
-        # Tune on IS only (optional)
-        frozen_params = None
-        if tune_fn is not None:
-            frozen_params = tune_fn(is_df1, is_df5, is_trades, cfg, w.window_id)
+            frozen_params = None
+            if tune_fn is not None:
+                frozen_params = tune_fn(is_df1, is_df5, is_trades, cfg, w.window_id)
 
-        # OOS run with frozen params
-        oos_trades = run_backtest_fn(
-            oos_df1,
-            oos_df5,
-            cfg,
-            params=frozen_params,
-            regime="OOS",
-            window_id=w.window_id,
-        )
-        oos_trades = oos_trades.copy()
-        oos_trades["window_id"] = w.window_id
-        oos_trades["regime"] = "OOS"
-        oos_trades_all.append(oos_trades)
+        if oos_df1 is not None:
+            oos_trades = run_backtest_fn(
+                oos_df1,
+                oos_df5,
+                cfg,
+                params=frozen_params if "frozen_params" in locals() else None,
+                regime="OOS",
+                window_id=w.window_id,
+            )
+            oos_trades = oos_trades.copy()
+            oos_trades["window_id"] = w.window_id
+            oos_trades["regime"] = "OOS"
+            oos_trades_all.append(oos_trades)
 
-        # Summaries
-        is_s = metrics_summary(is_trades)
-        oos_s = metrics_summary(oos_trades)
-
-        # Add window metadata
-        is_s.update(
-            {
-                "window_id": w.window_id,
-                "is_start": (
-                    str(w.is_sessions.min().date()) if len(w.is_sessions) else ""
-                ),
-                "is_end": str(w.is_sessions.max().date()) if len(w.is_sessions) else "",
-                "oos_start": (
-                    str(w.oos_sessions.min().date()) if len(w.oos_sessions) else ""
-                ),
-                "oos_end": (
-                    str(w.oos_sessions.max().date()) if len(w.oos_sessions) else ""
-                ),
-            }
-        )
-        oos_s.update(
-            {
-                "window_id": w.window_id,
-                "is_start": (
-                    str(w.is_sessions.min().date()) if len(w.is_sessions) else ""
-                ),
-                "is_end": str(w.is_sessions.max().date()) if len(w.is_sessions) else "",
-                "oos_start": (
-                    str(w.oos_sessions.min().date()) if len(w.oos_sessions) else ""
-                ),
-                "oos_end": (
-                    str(w.oos_sessions.max().date()) if len(w.oos_sessions) else ""
-                ),
-            }
-        )
-        is_rows.append(is_s)
-        oos_rows.append(oos_s)
-
-        # Labeled OOS equity steps (trade-level)
-        if len(oos_trades) > 0 and "realized_R" in oos_trades.columns:
-            ts_col = _timestamp_col(oos_trades)
-            if ts_col:
-                t = pd.to_datetime(oos_trades[ts_col], errors="coerce")
-            else:
-                t = pd.Series([pd.NaT] * len(oos_trades))
-
-            r = pd.to_numeric(oos_trades["realized_R"], errors="coerce").fillna(0.0)
-            eq = r.cumsum()
-
-            part = pd.DataFrame(
+            oos_s = metrics_summary(oos_trades)
+            oos_s.update(
                 {
-                    "timestamp": t,
-                    "equity_R": eq,
                     "window_id": w.window_id,
-                    "regime": "OOS",
+                    "is_start": (
+                        str(w.is_sessions.min().date()) if len(w.is_sessions) else ""
+                    ),
+                    "is_end": (
+                        str(w.is_sessions.max().date()) if len(w.is_sessions) else ""
+                    ),
+                    "oos_start": (
+                        str(w.oos_sessions.min().date()) if len(w.oos_sessions) else ""
+                    ),
+                    "oos_end": (
+                        str(w.oos_sessions.max().date()) if len(w.oos_sessions) else ""
+                    ),
                 }
             )
-            equity_parts.append(part)
+            oos_rows.append(oos_s)
+
+            if len(oos_trades) > 0 and "realized_R" in oos_trades.columns:
+                ts_col = _timestamp_col(oos_trades)
+                if ts_col:
+                    t = pd.to_datetime(oos_trades[ts_col], errors="coerce")
+                else:
+                    t = pd.Series([pd.NaT] * len(oos_trades))
+
+                r = pd.to_numeric(oos_trades["realized_R"], errors="coerce").fillna(0.0)
+                eq = r.cumsum()
+
+                part = pd.DataFrame(
+                    {
+                        "timestamp": t,
+                        "equity_R": eq,
+                        "window_id": w.window_id,
+                        "regime": "OOS",
+                    }
+                )
+                equity_parts.append(part)
+
+        if is_df1 is not None and "is_trades" in locals():
+            is_s = metrics_summary(is_trades)
+            is_s.update(
+                {
+                    "window_id": w.window_id,
+                    "is_start": (
+                        str(w.is_sessions.min().date()) if len(w.is_sessions) else ""
+                    ),
+                    "is_end": (
+                        str(w.is_sessions.max().date()) if len(w.is_sessions) else ""
+                    ),
+                    "oos_start": (
+                        str(w.oos_sessions.min().date()) if len(w.oos_sessions) else ""
+                    ),
+                    "oos_end": (
+                        str(w.oos_sessions.max().date()) if len(w.oos_sessions) else ""
+                    ),
+                }
+            )
+            is_rows.append(is_s)
 
     is_summary = pd.DataFrame(is_rows)
     oos_summary = pd.DataFrame(oos_rows)

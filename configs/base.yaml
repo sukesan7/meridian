@@ -5,7 +5,7 @@ entry_window:
     start: "09:35"
     end: "11:00"
 
-# Time-stop config (align with your TimeStopCfg usage)
+# Time-stop config
 time_stop:
     mode: "15min"
     tp1_timeout_min: 15
@@ -26,15 +26,14 @@ slippage:
 filters:
     skip_tiny_or: true
     tiny_or_mult: 0.25
-    # Use PERCENT (0–100), not fraction
-    low_atr_percentile: 20.0
+    low_atr_percentile: 20.0 # Use percentage (0–100)
     news_blackout: false
 
 signals:
-    # If true: disqualifier only applies after unlock (more eligible sessions)
+    # If true: disqualifier only applies after unlock (provide more eligible sessions)
     disqualify_after_unlock: true
 
-    # "range" = zone_touch uses high/low overlap with VWAP..±1σ (not close-only)
+    # "range" = zone_touch uses high/low overlap with VWAP ±1σ (not close-only)
     zone_touch_mode: "range"
 
     # Allow trigger within N bars of zone event (breakout bar allowed via engine logic)

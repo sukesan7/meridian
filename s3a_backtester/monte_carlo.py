@@ -1,4 +1,10 @@
-# Monte Carlo Simulation
+"""
+Monte Carlo Simulation
+----------------------
+Performs IID and Block Bootstrap resampling of trade results.
+Used to estimate risk bounds (MaxDD, Blowup Rate) and validate system robustness.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -17,12 +23,7 @@ def _realized_r(trades: pd.DataFrame) -> np.ndarray:
 
 
 def _infer_years_from_trades(trades: pd.DataFrame) -> float | None:
-    """
-    Infer a calendar time span (years) from trade timestamps.
-
-    Prefers [min(entry_time), max(exit_time)] if available. Falls back to entry_time only.
-    Returns None if timestamps are missing/unparseable.
-    """
+    """Infers the timespan of the trading history in years."""
     if trades is None or len(trades) == 0:
         return None
 
@@ -30,7 +31,6 @@ def _infer_years_from_trades(trades: pd.DataFrame) -> float | None:
     if not cols:
         return None
 
-    # Use the earliest entry and latest exit if possible
     empty_dt = pd.Series(dtype="datetime64[ns]")
     entry = pd.to_datetime(
         trades.get("entry_time", empty_dt), errors="coerce", utc=True
@@ -60,12 +60,7 @@ def _iid_bootstrap_indices(rng: np.random.Generator, n: int) -> np.ndarray:
 def _block_bootstrap_indices(
     rng: np.random.Generator, n: int, block_size: int
 ) -> np.ndarray:
-    """
-    Circular block bootstrap:
-      - pick random block starts
-      - take `block_size` consecutive indices (wrapping with modulo)
-      - repeat until length n
-    """
+    """Generates indices for circular block bootstrapping."""
     if block_size <= 0:
         raise ValueError("block_size must be > 0")
 
@@ -91,17 +86,8 @@ def mc_simulate_R(
     require_seed: bool = True,
 ) -> dict[str, Any]:
     """
-    Monte Carlo simulation on a trade R-series.
-
-    - Base mode: IID bootstrap sampling of realized_R
-    - Optional: block bootstrap via block_size (captures clustering)
-
-    Returns:
-      {
-        "summary": {...},
-        "samples": DataFrame[path_id, maxDD_pct, cagr, final_equity, blew_up],
-        "equity_paths": DataFrame[path_id, step, equity] OR None,
-      }
+    Runs Monte Carlo simulation on realized_R.
+    Returns summary stats, sample paths, and optional equity curves.
     """
     r = _realized_r(trades)
     n = int(r.size)
@@ -137,14 +123,14 @@ def mc_simulate_R(
     if years is None:
         years = _infer_years_from_trades(trades)
     if years is None:
-        raise ValueError(
-            "Could not infer years from trades; pass years= explicitly (or include entry_time/exit_time)."
-        )
+        raise ValueError("Could not infer years from trades; pass years= explicitly.")
     if years <= 0.0:
         raise ValueError("years must be > 0")
 
     rows: list[dict[str, Any]] = []
-    equity_paths = []  # list[DataFrame] only if keep_equity_paths
+    equity_paths = []
+
+    from .portfolio import equity_curve_from_r
 
     for pid in range(n_paths):
         if block_size is None:
@@ -166,12 +152,6 @@ def mc_simulate_R(
         )
 
         if keep_equity_paths:
-            # store full equity curve for plotting later
-            # (equity length = n_trades + 1)
-            from .portfolio import (
-                equity_curve_from_r,
-            )  # local import to keep module tidy
-
             eq = equity_curve_from_r(r_path, risk_per_trade=risk_per_trade)
             equity_paths.append(
                 pd.DataFrame(

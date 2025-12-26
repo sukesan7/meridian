@@ -1,9 +1,14 @@
-# 3A Engine
-# Strategy 3A Brain + State Machine
+"""
+Core Strategy Engine
+--------------------
+Orchestrates the signal generation and trade simulation phases.
+Includes the primary State Machine (Unlock -> Zone -> Trigger) and Trade Builder.
+"""
+
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal, cast
 from datetime import date
-from .config import Config
+from .config import Config, MgmtCfg, TimeStopCfg
 from .slippage import apply_slippage
 from .management import manage_trade_lifecycle
 from .filters import build_session_filter_mask
@@ -35,43 +40,18 @@ _TRADE_COLS = [
 ]
 
 
-# ----------------------------------------------
-# Simluation for Trades
-# ----------------------------------------------
 def simulate_trades(
     df1: pd.DataFrame, signals: pd.DataFrame, cfg: Config | None
 ) -> pd.DataFrame:
     """
-    Simulate 3A trades, including entry, management, and exits.
-
-    We assume `signals` is the 1-minute DataFrame returned by `generate_signals`,
-    i.e. it already contains OHLCV plus:
-        - direction        (+1 long, -1 short, 0 flat)
-        - trigger_ok       (bool)
-        - riskcap_ok       (bool)
-        - time_window_ok   (bool)
-        - disqualified_2sigma (bool)
-        - stop_price       (float)
-        - or_high / or_low (float)
-        - vwap, vwap_1u, vwap_1d
-        - micro_break_dir, engulf_dir (optional)
-
-    This function:
-        - filters valid entry bars
-        - applies slippage on entry using `apply_slippage`
-        - computes R distance and TP1/TP2
-        - if management config is present, runs full lifecycle:
-            TP1 scale-out, BE move, TP2, time-stop,
-            and writes realized_R / exit_time.
-        - returns a normalized trade log DataFrame.
+    Iterates through signal events to build executed trades.
+    Applies slippage, risk checks, and full lifecycle management.
     """
-    # Work off the signals frame; df1 is kept for signature compatibility.
     if signals is None or signals.empty:
         return pd.DataFrame(columns=_TRADE_COLS)
 
     df = signals.copy()
 
-    # Ensure expected columns exist with safe defaults.
     defaults: dict[str, object] = {
         "direction": 0,
         "trigger_ok": False,
@@ -94,12 +74,11 @@ def simulate_trades(
     }
     for col, val in defaults.items():
         if col not in df:
-            df[col] = val
+            # Cast val to Any to avoid overload resolution issues on assignment
+            df[col] = cast(Any, val)
 
-    # Direction flags
     direction = pd.to_numeric(df["direction"], errors="coerce").fillna(0).astype(int)
 
-    # Candidate entries: direction present, trigger, riskcap, time window, not disqualified.
     mask = (
         direction.ne(0)
         & df["trigger_ok"].astype(bool)
@@ -108,7 +87,6 @@ def simulate_trades(
         & ~df["disqualified_2sigma"].astype(bool)
     )
 
-    # Session-level filters (tiny-day, low ATR, news blackout, DOM)
     filters_cfg = getattr(cfg, "filters", None) if cfg is not None else None
     if filters_cfg is not None:
         session_mask = build_session_filter_mask(df, filters_cfg)
@@ -118,10 +96,9 @@ def simulate_trades(
     if entries.empty:
         return pd.DataFrame(columns=_TRADE_COLS)
 
-    # Tick size resolution
-    tick_size = 0.25  # sensible default for NQ/ES
-    mgmt_cfg = None
-    time_cfg = None
+    tick_size = 0.25
+    mgmt_cfg: MgmtCfg | None = None
+    time_cfg: TimeStopCfg | None = None
     if cfg is not None:
         tick_size = getattr(cfg, "tick_size", tick_size)
         inst = getattr(cfg, "instrument", None)
@@ -134,51 +111,43 @@ def simulate_trades(
     use_management = mgmt_cfg is not None and time_cfg is not None
 
     records: list[dict[str, object]] = []
-
-    # Cache per-session views so we don't slice df on every trade.
     session_cache: dict[date, pd.DataFrame] = {}
 
     for ts, row in entries.iterrows():
+        ts_idx = cast(pd.Timestamp, ts)
+
         dir_val = int(row["direction"])
         if dir_val == 0:
             continue
 
-        side = "long" if dir_val > 0 else "short"
+        side_lit: Literal["long", "short"] = "long" if dir_val > 0 else "short"
         side_sign = 1 if dir_val > 0 else -1
 
         raw_price = float(row["close"])
         stop = float(row["stop_price"]) if pd.notna(row["stop_price"]) else np.nan
         if not np.isfinite(stop):
-            # Without a valid stop we cannot define R; skip this bar.
             continue
 
-        # Apply slippage on entry
-        entry_price = apply_slippage(side, ts, raw_price, cfg)
+        entry_price = apply_slippage(side_lit, ts_idx, raw_price, cfg)
 
         risk_per_unit = abs(entry_price - stop)
         if risk_per_unit <= 0:
-            # Degenerate; skip
             continue
 
-        # Planned R per trade (in R-space; sizing is a later concern)
         risk_R = 1.0
 
-        # OR height for logging
         or_high = float(row.get("or_high", np.nan))
         or_low = float(row.get("or_low", np.nan))
         or_height = (
             or_high - or_low if np.isfinite(or_high) and np.isfinite(or_low) else np.nan
         )
 
-        # SL in ticks
         sl_ticks = risk_per_unit / tick_size if tick_size > 0 else np.nan
 
-        # Slippage in ticks at entry (signed adverse ticks)
         slip_ticks = 0.0
         if tick_size > 0:
             slip_ticks = (entry_price - raw_price) / tick_size
 
-        # Trigger type heuristic
         micro_dir = int(row.get("micro_break_dir", 0) or 0)
         engulf_dir = int(row.get("engulf_dir", 0) or 0)
         trigger_type = "unknown"
@@ -193,7 +162,6 @@ def simulate_trades(
             elif engulf_dir < 0:
                 trigger_type = "engulf"
 
-        # Location: coarse classification relative to VWAP bands
         vwap = float(row.get("vwap", np.nan))
         v1u = float(row.get("vwap_1u", np.nan))
         v1d = float(row.get("vwap_1d", np.nan))
@@ -201,19 +169,16 @@ def simulate_trades(
         if np.isfinite(vwap):
             price = float(row["close"])
             if dir_val > 0:
-                # Long: VWAP / +1σ zone
                 if np.isfinite(v1u) and vwap <= price <= v1u:
                     location = (
                         "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1σ"
                     )
             else:
-                # Short: VWAP / -1σ zone
                 if np.isfinite(v1d) and v1d <= price <= vwap:
                     location = (
                         "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1σ"
                     )
 
-        # ---- Management & exits ----
         exit_time = pd.NaT
         realized_R = 0.0
         tp1_price = entry_price + side_sign * risk_per_unit * 1.0
@@ -221,33 +186,33 @@ def simulate_trades(
         t_to_tp1_min = np.nan
         time_stop_reason = "none"
 
-        if use_management:
-            trade_date = ts.date()
+        if use_management and mgmt_cfg and time_cfg:
+            trade_date = ts_idx.date()
             if trade_date not in session_cache:
-                # Session-scoped slice: all bars for that trading day
-                mask_session = df.index.date == trade_date
+                idx_all = cast(pd.DatetimeIndex, df.index)
+                mask_session = idx_all.date == trade_date
                 session_cache[trade_date] = df.loc[mask_session]
 
             session_df = session_cache[trade_date]
-            # locate entry within that session
             try:
                 entry_idx = session_df.index.get_loc(ts)
             except KeyError:
-                # Shouldn't happen if signals are consistent, but be defensive
                 entry_idx = 0
 
-            # build refs for TP2
+            if isinstance(entry_idx, slice) or isinstance(entry_idx, np.ndarray):
+                entry_idx = 0
+
             pdh = float(row.get("pdh", np.nan))
             pdl = float(row.get("pdl", np.nan))
             refs = {
-                "pdh": pdh if np.isfinite(pdh) else None,
-                "pdl": pdl if np.isfinite(pdl) else None,
-                "or_height": or_height if np.isfinite(or_height) else None,
+                "pdh": pdh if np.isfinite(pdh) else 0.0,
+                "pdl": pdl if np.isfinite(pdl) else 0.0,
+                "or_height": or_height if np.isfinite(or_height) else 0.0,
             }
 
             conds = build_time_stop_condition_series(
                 session_df=session_df,
-                entry_idx=entry_idx,
+                entry_idx=int(entry_idx),
                 side_sign=side_sign,
                 entry_price=float(entry_price),
                 stop_price=float(stop),
@@ -255,7 +220,7 @@ def simulate_trades(
 
             lifecycle = manage_trade_lifecycle(
                 bars=session_df,
-                entry_idx=entry_idx,
+                entry_idx=int(entry_idx),
                 side=side_sign,
                 entry_price=float(entry_price),
                 stop_price=float(stop),
@@ -285,10 +250,10 @@ def simulate_trades(
 
         records.append(
             {
-                "date": ts.date(),
+                "date": ts_idx.date(),
                 "entry_time": ts,
                 "exit_time": exit_time,
-                "side": side,
+                "side": side_lit,
                 "entry": float(entry_price),
                 "stop": float(stop),
                 "tp1": float(tp1_price),
@@ -303,7 +268,7 @@ def simulate_trades(
                 "time_stop": time_stop_reason,
                 "disqualifier": "none",
                 "slippage_entry_ticks": float(slip_ticks),
-                "slippage_exit_ticks": 0.0,  # exit slippage model can be added later
+                "slippage_exit_ticks": 0.0,
             }
         )
 
@@ -312,7 +277,6 @@ def simulate_trades(
 
     trades = pd.DataFrame.from_records(records)
 
-    # Enforce column order / presence as per schema
     for col in _TRADE_COLS:
         if col not in trades:
             trades[col] = np.nan
@@ -321,28 +285,16 @@ def simulate_trades(
     return trades
 
 
-# ----------------------------------------------
-# Signal Generation for 3A
-# ----------------------------------------------
 def generate_signals(
     df_1m: pd.DataFrame,
     df_5m: pd.DataFrame | None = None,
     cfg: Any | None = None,
 ) -> pd.DataFrame:
     """
-    Core 3A signal engine.
-
-    Works in two modes:
-    - Stub mode: if OR/VWAP/trend columns are missing, just ensure the standard
-      signal columns exist and return.
-    - Full mode: when all required feature columns are present, compute
-      unlock / zone / trigger / risk-cap flags in the way the tests expect.
+    Computes all signal columns (Unlock, Zone, Trigger) in a vectorized manner.
     """
     out = df_1m.copy()
 
-    # ------------------------------------------------------------------
-    # Standard columns (for both stub & full modes)
-    # ------------------------------------------------------------------
     std_defaults: dict[str, object] = {
         "time_window_ok": True,
         "or_break_unlock": False,
@@ -356,34 +308,17 @@ def generate_signals(
     }
     for col, val in std_defaults.items():
         if col not in out:
-            out[col] = val
+            # Cast val to Any to ensure assignment works on mixed-type DataFrame
+            out[col] = cast(Any, val)
 
-    # --- Safe Apply Wrapper ---
-    def _safe_apply(builder, frame: pd.DataFrame, *args, **kwargs) -> pd.DataFrame:
-        """Call a feature builder that might return None (in-place mutation)."""
-        res = builder(frame, *args, **kwargs)
-        return frame if res is None else res
-
-    # --- Make sure index is ET for session grouping ---
-    idx = out.index
-    if getattr(idx, "tz", None) is not None:
+    idx = cast(pd.DatetimeIndex, out.index)
+    if idx.tz is not None:
         idx_et = idx.tz_convert("America/New_York")
     else:
         idx_et = idx
     dates = pd.Index(idx_et.date, name="date")
     times = idx_et.time
 
-    # ------------------------------------------------------------------
-    # (Optional) try to build missing features if you have builders imported
-    # IMPORTANT: do NOT let out become None
-    # ------------------------------------------------------------------
-    # Example (only if you actually have these imported):
-    # if "or_high" not in out.columns or "or_low" not in out.columns:
-    #     out = _safe_apply(compute_session_refs, out)
-    # if "vwap" not in out.columns or "vwap_1u" not in out.columns:
-    #     out = _safe_apply(compute_session_vwap_bands, out)
-
-    # If trend is provided on df_5m, align it (tests often pass df_5m=None)
     if (
         "trend_5m" not in out.columns
         and df_5m is not None
@@ -397,9 +332,6 @@ def generate_signals(
     ):
         out["trend_dir_5m"] = df_5m["trend_dir_5m"].reindex(out.index, method="ffill")
 
-    # ------------------------------------------------------------------
-    # Decide whether we have enough columns for FULL logic
-    # ------------------------------------------------------------------
     required = {
         "close",
         "or_high",
@@ -412,7 +344,6 @@ def generate_signals(
         "trend_5m",
     }
     if not required.issubset(out.columns):
-        # Stub path: just return with the standard columns present.
         return out
 
     close = out["close"].astype(float)
@@ -425,9 +356,6 @@ def generate_signals(
     v2d = out["vwap_2d"].astype(float)
     trend = out["trend_5m"].astype(float)
 
-    # ------------------------------------------------------------------
-    # 1) Time window
-    # ------------------------------------------------------------------
     ew = getattr(cfg, "entry_window", None) if cfg is not None else None
     if ew is None:
         time_ok = pd.Series(True, index=out.index)
@@ -439,9 +367,6 @@ def generate_signals(
         )
     out["time_window_ok"] = time_ok
 
-    # ------------------------------------------------------------------
-    # 2) Direction + first unlock event
-    # ------------------------------------------------------------------
     is_long_trend = trend > 0
     is_short_trend = trend < 0
 
@@ -466,14 +391,10 @@ def generate_signals(
     prev = unlock_raw.groupby(dates).shift(1, fill_value=False)
     out["or_break_unlock"] = unlock_raw & ~prev
 
-    # ------------------------------------------------------------------
-    # 3) Opposite 2σ disqualifier (session-scoped cumulative)
-    # ------------------------------------------------------------------
     hit_opp_long = is_long_trend & (close <= v2d)
     hit_opp_short = is_short_trend & (close >= v2u)
     hit_opp = (hit_opp_long | hit_opp_short).astype(bool)
 
-    # Optional: relax for real runs ONLY (defaults keep tests the same)
     rules = getattr(cfg, "signals", None) if cfg is not None else None
     disq_after_unlock = bool(getattr(rules, "disqualify_after_unlock", False))
 
@@ -482,17 +403,13 @@ def generate_signals(
 
     disq = hit_for_disq.groupby(dates).cummax().astype(bool)
     out["disqualified_2sigma"] = disq
-    out["disqualified_±2σ"] = disq  # backwards compatibility
+    out["disqualified_±2σ"] = disq
 
-    # ------------------------------------------------------------------
-    # 4) Zone: first pullback into VWAP±1σ after unlock (one event per day)
-    # ------------------------------------------------------------------
     direction = out["direction"].astype("int8")
-    unlock_event = out["or_break_unlock"].astype(bool)  # event
-    unlocked = out.get("unlocked", unlock_event).astype(bool)  # state fallback
+    unlock_event = out["or_break_unlock"].astype(bool)
+    unlocked = out.get("unlocked", unlock_event).astype(bool)
     disq = out["disqualified_2sigma"].astype(bool)
 
-    # Optional: "range" zone touch for real runs (defaults keep tests the same)
     zone_touch_mode = str(getattr(rules, "zone_touch_mode", "close")).lower()
 
     if zone_touch_mode == "range" and {"high", "low"}.issubset(out.columns):
@@ -501,7 +418,6 @@ def generate_signals(
         long_zone_touch = (lo <= v1u) & (hi >= vwap)
         short_zone_touch = (hi >= v1d) & (lo <= vwap)
     else:
-        # test-compatible default: close-based touch
         long_zone_touch = (close >= vwap) & (close <= v1u)
         short_zone_touch = (close <= vwap) & (close >= v1d)
 
@@ -509,19 +425,13 @@ def generate_signals(
         (direction < 0) & short_zone_touch
     )
 
-    # must be AFTER unlock bar, must not already be disqualified on that bar
     zone_candidate = (unlocked & ~unlock_event & ~disq & zone_touch).astype(bool)
 
-    # exactly one zone event per session/day:
-    # cumsum==1 "sticks" after the first True, so we MUST AND with zone_candidate
     zone_count = zone_candidate.groupby(dates).cumsum()
     in_zone = (zone_count == 1) & zone_candidate
 
     out["in_zone"] = in_zone.astype(bool)
 
-    # ------------------------------------------------------------------
-    # 5) Trigger: micro-break or engulf after zone touch (breakout bar allowed)
-    # ------------------------------------------------------------------
     micro_raw = (
         out["micro_break_dir"]
         if "micro_break_dir" in out.columns
@@ -539,7 +449,6 @@ def generate_signals(
     in_zone = out["in_zone"].astype(bool)
     zone_seen = in_zone.groupby(dates).cummax().astype(bool)
 
-    # Optional: widen trigger lookback for real runs (defaults keep tests the same)
     lookback = int(getattr(rules, "trigger_lookback_bars", 2))
     lookback = max(0, min(lookback, 10))
 
@@ -561,12 +470,6 @@ def generate_signals(
         (direction != 0) & zone_seen & zone_recent & pattern_ok & time_ok & ~disq
     )
 
-    # ------------------------------------------------------------------
-    # 6) Stop + risk-cap
-    #     - Keep any pre-set stop_price (tests sometimes set it)
-    #     - If missing, infer from latest swing (session-scoped)
-    #     - riskcap_ok is evaluated on any bar where stop_price is known
-    # ------------------------------------------------------------------
     tick_size = 1.0
     inst = getattr(cfg, "instrument", None) if cfg is not None else None
     tick_size = float(getattr(inst, "tick_size", tick_size) or tick_size)
@@ -575,11 +478,9 @@ def generate_signals(
     risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
     max_mult = float(getattr(risk_cfg, "max_stop_or_mult", max_mult) or max_mult)
 
-    # Ensure or_height exists
     if "or_height" not in out.columns:
         out["or_height"] = out["or_high"].astype(float) - out["or_low"].astype(float)
 
-    # Start from existing stop_price if present; DO NOT overwrite test-provided stops
     if "stop_price" in out.columns:
         stop_price = pd.to_numeric(out["stop_price"], errors="coerce").astype(float)
     else:
@@ -587,14 +488,12 @@ def generate_signals(
 
     direction = out["direction"].astype("int8")
 
-    # ---- infer missing stops from swings (if swing markers exist) ----
     if (
         ("swing_lo" in out.columns)
         or ("swing_low" in out.columns)
         or ("swing_hi" in out.columns)
         or ("swing_high" in out.columns)
     ):
-        # resolve swing marker columns
         swing_lo = (
             out["swing_lo"].astype(bool)
             if "swing_lo" in out.columns
@@ -614,7 +513,6 @@ def generate_signals(
             )
         )
 
-        # session-scoped latest swing values
         last_swing_lo = out["low"].where(swing_lo).groupby(dates).ffill()
         last_swing_hi = out["high"].where(swing_hi).groupby(dates).ffill()
 
@@ -624,10 +522,8 @@ def generate_signals(
         cand_stop.loc[longs] = (last_swing_lo.loc[longs] - tick_size).astype(float)
         cand_stop.loc[shorts] = (last_swing_hi.loc[shorts] + tick_size).astype(float)
 
-        # only fill missing
         stop_price = stop_price.where(stop_price.notna(), cand_stop)
 
-    # ---- risk-cap (evaluate whenever stop exists) ----
     entry_px = out["close"].astype(float)
     or_h = out["or_height"].astype(float).abs()
     cap = max_mult * or_h
@@ -640,7 +536,6 @@ def generate_signals(
 
     cap_ok = stop_price.notna() & (risk_dist > 0) & (risk_dist <= cap)
 
-    # If stop is unknown, we leave riskcap_ok=True (not evaluated yet).
     riskcap_ok = stop_price.isna() | cap_ok
 
     out["stop_price"] = stop_price

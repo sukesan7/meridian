@@ -1,9 +1,26 @@
-from __future__ import annotations
+"""
+Script: Data Inventory & QA
+Purpose: Audits a directory of Parquet files to verify row counts, time ranges, and schema integrity.
 
+Description:
+    recursively scans a folder (e.g., 'data/vendor_parquet') and produces a CSV report.
+    Crucial for detecting "Tiny Days" (missing data) or timezone alignment issues before
+    running expensive backtests.
+
+Usage:
+    python scripts/data_inventory.py --parquet-dir data/vendor_parquet/NQ --out outputs/inventory_nq.csv
+
+Arguments:
+    --parquet-dir     : Root directory to scan.
+    --out             : Path to save the CSV report.
+    --pattern         : (Optional) Glob pattern filter (default: "*.parquet").
+    --require-datetime: (Optional) Skip files without valid timestamps.
+"""
+
+from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Any
-
 import pandas as pd
 
 

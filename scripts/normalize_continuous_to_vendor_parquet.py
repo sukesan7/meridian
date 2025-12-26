@@ -1,18 +1,23 @@
 """
-Normalize Databento raw Parquet (OHLCV-1m) into backtester-ready Parquet:
+Script: ETL Normalizer
+Purpose: Transforms raw Databento API dumps into the strict Meridian Data Contract.
 
-Output schema (per row):
-  timestamp (UTC, tz-aware)
-  symbol
-  open, high, low, close, volume
+Description:
+    Performs the Critical Path ETL steps:
+    1. Timezone Standardization: UTC -> America/New_York.
+    2. RTH Slicing: Filters for 09:30 - 16:00 ET.
+    3. Grid Alignment: Reindexes to a dense 1-minute grid (gap handling via ffill/zero-vol).
+    4. Schema Enforcement: Drops vendor metadata, keeps only OHLCV + Symbol.
 
-Writes:
-  data/vendor_parquet/<PRODUCT>/by_day/<SYMBOL>/<YYYY>/<MM>/<YYYY-MM-DD>.parquet
-  data/vendor_parquet/<PRODUCT>/<SYMBOL>_<start>_<end>_RTH.parquet
+Usage:
+    python scripts/normalize_continuous_to_vendor_parquet.py \
+        --raw-parquet data/raw/databento_api/raw_nq.parquet \
+        --symbol NQ.v.0 --product NQ
 
-Also:
-  - filters to RTH only (09:30-16:00 ET)
-  - reindexes each session to a full 1-min grid (09:30..15:59) and forward-fills close
+Arguments:
+    --raw-parquet : Path to the source file from Databento.
+    --product     : Product code (NQ/ES) for folder organization.
+    --write-by-day: (Flag) Also output partitioned files for unit testing.
 """
 
 from __future__ import annotations

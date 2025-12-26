@@ -1,17 +1,28 @@
 """
-Fetch Databento OHLCV-1m for continuous futures (e.g., NQ.v.0, ES.v.0)
-and save a raw Parquet file.
+Script: Databento Fetcher (Continuous Futures)
+Purpose: Ingests raw 1-minute OHLCV data for continuous contracts (NQ, ES) via the Databento API.
 
-Why: Web portal downloads are "parent product" requests and include many
-child instruments + spreads. API lets you request a single continuous instrument.
+Description:
+    Fetches data using the 'continuous' symbology (e.g., NQ.v.0) to handle contract rolls automatically.
+    Includes credit-protection logic (guards against huge date ranges) and chunking recommendations.
+    Writes RAW, immutable vendor parquet files to 'data/raw/'.
+
+Usage:
+    python scripts/databento_fetch_continuous.py --symbol NQ.v.0 --start 2025-01-01 --end 2025-01-31
+
+Environment:
+    DATABENTO_API_KEY : Must be set in environment variables.
+
+Arguments:
+    --symbol   : Continuous ticker (e.g., NQ.v.0, ES.v.0).
+    --start    : Start date (YYYY-MM-DD), inclusive.
+    --end      : End date (YYYY-MM-DD), inclusive (converted to exclusive for API).
 """
 
 from __future__ import annotations
-
 import argparse
 import os
 from pathlib import Path
-
 import databento as db
 import pandas as pd
 

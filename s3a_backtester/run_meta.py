@@ -1,4 +1,10 @@
-# Metadata writer
+"""
+Run Metadata
+------------
+Captures and writes execution details (Git SHA, Config Hash, CLI args)
+to ensure backtest provenance and reproducibility.
+"""
+
 from __future__ import annotations
 
 import json
@@ -24,11 +30,12 @@ def build_run_meta(
     run_id: str,
     outputs_dir: str | Path,
     config_path: Optional[str] = None,
-    config_obj: Optional[Any] = None,  # dataclass
+    config_obj: Optional[Any] = None,
     data_path: Optional[str] = None,
     seed: Optional[int] = None,
     hash_data: bool = False,
 ) -> Dict[str, Any]:
+    """Constructs a metadata dictionary for the current execution context."""
     out_dir = Path(outputs_dir)
 
     meta: Dict[str, Any] = {
@@ -58,7 +65,7 @@ def build_run_meta(
         try:
             stat = p.stat()
             meta["data_size_bytes"] = stat.st_size
-            meta["data_mtime_utc"] = utc_now_iso()  # keeps format consistent; optional
+            meta["data_mtime_utc"] = utc_now_iso()
         except Exception:
             pass
 
@@ -69,6 +76,7 @@ def build_run_meta(
 
 
 def write_run_meta(outputs_dir: str | Path, meta: Dict[str, Any]) -> Path:
+    """Writes the metadata dictionary to run_meta.json in the output directory."""
     out_dir = Path(outputs_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

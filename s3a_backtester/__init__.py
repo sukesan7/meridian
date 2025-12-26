@@ -1,1 +1,6 @@
-# Initialize file to set directory readable. Used to set s3a_backtester as a package and for importing.
+"""
+S3A Backtester
+--------------
+An event-driven backtesting engine for quantitative trading.
+Focuses on 1-minute OHLCV data, strict session handling, and vector-based signal generation.
+"""

@@ -1,3 +1,10 @@
+"""
+Slippage Model
+--------------
+Implements time-dependent slippage logic.
+Differentiates between 'normal' trading hours and 'hot' windows (e.g., market open).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,18 +17,7 @@ Side = Literal["long", "short"]
 
 @dataclass
 class SlippageConfig:
-    """
-    Simple slippage model:
-
-    - normal_ticks: slippage (in ticks) during regular periods.
-    - hot_ticks:    slippage (in ticks) during the "hot" window.
-    - hot_start:    start of hot window (clock time, ET) e.g. "09:30".
-    - hot_end:      end of hot window (clock time, ET) e.g. "09:40".
-    - tick_size:    fallback tick size if cfg.instrument.tick_size is absent.
-
-    This is *intentionally* very small and declarative; the real config object
-    will usually wrap this as cfg.slippage.
-    """
+    """Internal slippage parameters."""
 
     normal_ticks: int = 0
     hot_ticks: int = 0
@@ -31,7 +27,6 @@ class SlippageConfig:
 
 
 def _get_tick_size(cfg: Any, default: float) -> float:
-    """Resolve tick size from cfg.instrument.tick_size or cfg.tick_size."""
     if cfg is None:
         return default
     inst = getattr(cfg, "instrument", None)
@@ -46,10 +41,6 @@ def _get_tick_size(cfg: Any, default: float) -> float:
 
 
 def _get_slip_cfg(cfg: Any) -> SlippageConfig | None:
-    """
-    Extract a SlippageConfig view from cfg.slippage, or None if no
-    slippage should be applied.
-    """
     if cfg is None:
         return None
     raw = getattr(cfg, "slippage", None)
@@ -58,7 +49,6 @@ def _get_slip_cfg(cfg: Any) -> SlippageConfig | None:
     if isinstance(raw, SlippageConfig):
         return raw
 
-    # Allow plain objects / namespaces with matching attributes.
     return SlippageConfig(
         normal_ticks=getattr(raw, "normal_ticks", 0),
         hot_ticks=getattr(raw, "hot_ticks", getattr(raw, "normal_ticks", 0)),
@@ -69,20 +59,14 @@ def _get_slip_cfg(cfg: Any) -> SlippageConfig | None:
 
 
 def _is_hot_window(ts: pd.Timestamp, slip_cfg: SlippageConfig) -> bool:
-    """
-    Decide whether a timestamp is in the configured 'hot' window.
-
-    All comparisons are done in America/New_York clock time.
-    """
     if ts.tzinfo is not None:
         ts_et = ts.tz_convert("America/New_York")
     else:
-        ts_et = ts  # assume already ET
+        ts_et = ts
 
     t = ts_et.time()
     start = pd.Timestamp(slip_cfg.hot_start).time()
     end = pd.Timestamp(slip_cfg.hot_end).time()
-    # Treat window as [start, end); tweak if you want end-inclusive.
     return start <= t < end
 
 
@@ -92,29 +76,7 @@ def apply_slippage(
     raw_price: float,
     cfg: Any | None = None,
 ) -> float:
-    """
-    Apply simple time-of-day based slippage to a raw price.
-
-    Parameters
-    ----------
-    side:
-        "long" or "short". Unknown values → no slippage.
-    ts:
-        Bar timestamp (tz-aware preferred). Hot vs normal windows are
-        evaluated in America/New_York clock time.
-    raw_price:
-        The un-slipped price (e.g. bar-close).
-    cfg:
-        Global config object. We look for:
-            - cfg.slippage.normal_ticks / hot_ticks / hot_start / hot_end
-            - cfg.instrument.tick_size or cfg.tick_size
-        If cfg.slippage is missing, this function returns raw_price.
-
-    Returns
-    -------
-    float
-        Slipped price (worse than raw_price in the direction of the trade).
-    """
+    """Calculates executed price after applying slippage rules."""
     slip_cfg = _get_slip_cfg(cfg)
     if slip_cfg is None:
         return float(raw_price)
@@ -128,11 +90,9 @@ def apply_slippage(
     if ticks == 0:
         return float(raw_price)
 
-    # Pay worse price in direction of the trade.
     if side == "long":
         return float(raw_price + ticks * tick_size)
     if side == "short":
         return float(raw_price - ticks * tick_size)
 
-    # Unknown side → no slippage.
     return float(raw_price)
