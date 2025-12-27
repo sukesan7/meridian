@@ -99,10 +99,16 @@ def simulate_trades(
     mgmt_cfg: MgmtCfg | None = None
     time_cfg: TimeStopCfg | None = None
     if cfg is not None:
-        tick_size = getattr(cfg, "tick_size", tick_size)
         inst = getattr(cfg, "instrument", None)
         if inst is not None:
             tick_size = getattr(inst, "tick_size", tick_size)
+
+        if hasattr(cfg, "slippage"):
+            slip = getattr(cfg, "slippage")
+            tick_size = getattr(slip, "tick_size", tick_size)
+
+        tick_size = getattr(cfg, "tick_size", tick_size)
+
         mgmt_cfg = getattr(cfg, "management", None)
         time_cfg = getattr(cfg, "time_stop", None)
 
@@ -472,6 +478,10 @@ def generate_signals(
     tick_size = 1.0
     inst = getattr(cfg, "instrument", None) if cfg is not None else None
     tick_size = float(getattr(inst, "tick_size", tick_size) or tick_size)
+
+    if hasattr(cfg, "slippage"):
+        slip = getattr(cfg, "slippage")
+        tick_size = float(getattr(slip, "tick_size", tick_size) or tick_size)
 
     max_mult = 1.25
     risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
