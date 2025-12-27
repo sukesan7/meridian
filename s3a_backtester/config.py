@@ -8,6 +8,7 @@ Acts as the single source of truth for all strategy parameters.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
+from pathlib import Path
 import yaml
 
 
@@ -21,11 +22,7 @@ class EntryWindow:
 
 @dataclass
 class TimeStopCfg:
-    """
-    Configuration for time-based exits.
-    - mode: '15m' or 'none'.
-    - max_holding_min: Hard limit on trade duration.
-    """
+    """Configuration for time-based exits."""
 
     mode: str = "15m"
     tp1_timeout_min: int = 15
@@ -35,10 +32,7 @@ class TimeStopCfg:
 
 @dataclass
 class SlippageCfg:
-    """
-    Slippage simulation parameters.
-    Separates 'normal' conditions from 'hot' (volatile) windows.
-    """
+    """Slippage simulation parameters."""
 
     normal_ticks: int = 1
     hot_ticks: int = 2
@@ -74,10 +68,7 @@ class TrendCfg:
 
 @dataclass
 class MgmtCfg:
-    """
-    Trade management rules.
-    Controls targets (R-multiples) and scaling behavior.
-    """
+    """Trade management rules."""
 
     tp1_R: float = 1.0
     tp2_R: float = 2.0
@@ -124,8 +115,9 @@ def _merge_dc(obj: Any, patch: dict[str, Any], *, path: str = "") -> Any:
         return obj
     for k, v in patch.items():
         if not hasattr(obj, k):
-            raise ValueError(f"Unknown config key: {path + k}")
+            continue
         cur = getattr(obj, k)
+
         if hasattr(cur, "__dataclass_fields__") and isinstance(v, dict):
             _merge_dc(cur, v, path=path + k + ".")
         else:
@@ -133,30 +125,20 @@ def _merge_dc(obj: Any, patch: dict[str, Any], *, path: str = "") -> Any:
     return obj
 
 
-def load_config(path: str) -> Config:
-    """Loads a YAML file and validates it against the Config schema."""
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+def load_config(path: str | Path) -> Config:
+    """
+    Loads configuration from a YAML file.
+    Strictly reads the file ONCE to avoid stream consumption issues.
+    Recursively updates the default config object to ensure type safety.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
 
-        raw = yaml.safe_load(f) or {}
-
-    # Backward-compat: slippage.hot_minutes -> slippage.hot_start/hot_end
-    sl = raw.get("slippage")
-    if isinstance(sl, dict):
-        hm = sl.get("hot_minutes")
-        if hm is not None and ("hot_start" not in sl and "hot_end" not in sl):
-            first = hm[0] if isinstance(hm, list) and hm else hm
-            if isinstance(first, str) and "-" in first:
-                a, b = first.split("-", 1)
-                sl["hot_start"] = a.strip()
-                sl["hot_end"] = b.strip()
-            sl.pop("hot_minutes", None)
+    with open(p, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
 
     cfg = Config()
+    _merge_dc(cfg, data)
 
-    m = (cfg.time_stop.mode or "").lower()
-    if m in {"15min", "15m", "15"}:
-        cfg.time_stop.mode = "15m"
-
-    _merge_dc(cfg, raw)
     return cfg

@@ -5,9 +5,8 @@ entry_window:
     start: "09:35"
     end: "11:00"
 
-# Time-stop config
 time_stop:
-    mode: "15min"
+    mode: "15m"
     tp1_timeout_min: 15
     max_holding_min: 45
     allow_extension: true
@@ -19,25 +18,23 @@ risk:
 slippage:
     normal_ticks: 1
     hot_ticks: 2
-    hot_minutes:
-        - "09:30-09:40"
-        - "10:00-10:02"
+    hot_start: "09:30"
+    hot_end: "09:40"
+    tick_size: 0.25
 
 filters:
     skip_tiny_or: true
     tiny_or_mult: 0.25
-    low_atr_percentile: 20.0 # Use percentage (0–100)
+    low_atr_percentile: 20.0
     news_blackout: false
 
 signals:
-    # If true: disqualifier only applies after unlock (provide more eligible sessions)
     disqualify_after_unlock: true
-
-    # "range" = zone_touch uses high/low overlap with VWAP ±1σ (not close-only)
     zone_touch_mode: "range"
-
-    # Allow trigger within N bars of zone event (breakout bar allowed via engine logic)
     trigger_lookback_bars: 5
+
+zones:
+    allow_plus2sigma_disqualify: true
 
 trend:
     require_vwap_side: true
