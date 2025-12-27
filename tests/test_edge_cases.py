@@ -92,7 +92,6 @@ def test_gap_open_below_stop_long():
         {"high": 100.0, "low": 100.0, "close": 100.0, "open": 100.0}, index=idx
     )
 
-    # Bar 2 gaps down massively
     df.loc[idx[2], "open"] = 80.0
     df.loc[idx[2], "high"] = 85.0
     df.loc[idx[2], "low"] = 70.0
@@ -109,8 +108,6 @@ def test_gap_open_below_stop_long():
         refs={},
     )
 
-    # Current engine logic uses low <= stop.
-    # This test asserts mechanism works, even if fill price is conservative.
     assert res["exit_idx"] == 2
 
 
@@ -148,9 +145,8 @@ def test_nan_price_handling():
     """Data corruption: Price becomes NaN mid-session."""
     vals = [100.0, 101.0, np.nan, 102.0]
     df = _make_df(vals)
-    # Generate signals should not crash
     out = generate_signals(df, cfg=MockCfg)
-    # Should not trigger on NaN bars
+
     assert not out["trigger_ok"].iloc[2]
 
 
@@ -220,9 +216,9 @@ def test_single_bar_session():
     df = _make_df([100.0])
     atr = compute_atr15(df)
     swings = find_swings_1m(df)
-    # ATR with min_periods=1 produces valid 0.0 for single bar
+
     assert not atr.isna().all()
-    assert not swings["swing_high"].any()
+    assert not swings["swing_high_confirmed"].any()
 
 
 def test_trigger_on_last_bar():
@@ -234,12 +230,10 @@ def test_trigger_on_last_bar():
     out = generate_signals(df, cfg=MockCfg)
     assert out["trigger_ok"].iloc[-1]
 
-    # Needs valid management config to populate exit_time
     res = simulate_trades(df, out, cfg=MockCfg)
     assert not res.empty
     t = res.iloc[0]
 
-    # If entry is last bar, exit is forced at same bar
     assert t["entry_time"] == t["exit_time"]
     assert t["realized_R"] == 0.0
 
@@ -251,9 +245,7 @@ def test_trigger_on_last_bar():
 
 def test_missing_optional_config_sections():
     """Simulate trades with bare-bones config object (missing sub-configs)."""
-    # Create valid signals ONLY on index 5
     df = _make_df([100.0] * 10)
-    # _make_df defaults trigger_ok=True for ALL bars. Turn it off.
     df["trigger_ok"] = False
 
     df.loc[df.index[5], ["trigger_ok", "riskcap_ok", "time_window_ok"]] = True
@@ -262,7 +254,6 @@ def test_missing_optional_config_sections():
 
     class BareCfg:
         instrument = type("I", (), {"tick_size": 1.0})()
-        # No management/time_stop attr at all
 
     res = simulate_trades(df, df, cfg=BareCfg)
     assert len(res) == 1
@@ -293,7 +284,6 @@ def test_slippage_exceeds_trade_profit():
     df.loc[idx[4], ["high", "low", "close"]] = 102.0
 
     class SlipCfg(MockCfg):
-        # 09:30 is a "Hot" window. We must set hot_ticks to force slippage.
         slippage = SlippageConfig(hot_ticks=5, hot_start="09:00", hot_end="10:00")
         instrument = type("I", (), {"tick_size": 1.0})()
 
@@ -304,6 +294,5 @@ def test_slippage_exceeds_trade_profit():
     res = simulate_trades(df, df_sig, cfg=SlipCfg)
     t = res.iloc[0]
 
-    # Entry 100 + 5 (hot slip) = 105.
     assert t["entry"] == 105.0
     assert t["slippage_entry_ticks"] == 5.0

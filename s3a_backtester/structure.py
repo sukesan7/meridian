@@ -108,11 +108,14 @@ def trend_5m(df_5m: pd.DataFrame, cfg: Optional[Trend5mConfig] = None) -> pd.Dat
 
 def micro_swing_break(
     df: pd.DataFrame,
-    swing_high_col: str = "swing_high",
-    swing_low_col: str = "swing_low",
+    swing_high_col: str = "swing_high_confirmed",
+    swing_low_col: str = "swing_low_confirmed",
+    last_high_px_col: str = "last_swing_high_price",
+    last_low_px_col: str = "last_swing_low_price",
 ) -> pd.DataFrame:
     """
-    Identify micro-structure breaks (BOS) and engulfing candles on 1-minute data.
+    Identify micro-structure breaks (BOS) and engulfing candles.
+    ADAPTED for v1.0.1: Uses 'last_swing_X_price' columns for levels.
     """
     required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
@@ -122,42 +125,50 @@ def micro_swing_break(
     high = df["high"].to_numpy(dtype="float64")
     low = df["low"].to_numpy(dtype="float64")
 
-    swing_high = (
+    swing_high_event = (
         df.get(swing_high_col, pd.Series(False, index=df.index))
         .fillna(False)
         .to_numpy(dtype="bool")
     )
-    swing_low = (
+    swing_low_event = (
         df.get(swing_low_col, pd.Series(False, index=df.index))
         .fillna(False)
         .to_numpy(dtype="bool")
     )
 
+    lvl_high = df.get(last_high_px_col, pd.Series(np.nan, index=df.index)).to_numpy(
+        dtype="float64"
+    )
+    lvl_low = df.get(last_low_px_col, pd.Series(np.nan, index=df.index)).to_numpy(
+        dtype="float64"
+    )
+
     n = len(df)
     micro_dir = np.zeros(n, dtype="int8")
 
-    last_swing_high = np.nan
-    last_swing_low = np.nan
     high_broken = False
     low_broken = False
 
     for i in range(n):
-        if swing_high[i]:
-            last_swing_high = high[i]
+        if swing_high_event[i]:
             high_broken = False
 
-        if swing_low[i]:
-            last_swing_low = low[i]
+        if swing_low_event[i]:
             low_broken = False
 
-        broke_up = (
-            not np.isnan(last_swing_high)
-            and not high_broken
-            and high[i] > last_swing_high
-        )
-        broke_down = (
-            not np.isnan(last_swing_low) and not low_broken and low[i] < last_swing_low
-        )
+        current_res = lvl_high[i]
+        current_sup = lvl_low[i]
+
+        broke_up = False
+        broke_down = False
+
+        if not np.isnan(current_res) and not high_broken:
+            if high[i] > current_res:
+                broke_up = True
+
+        if not np.isnan(current_sup) and not low_broken:
+            if low[i] < current_sup:
+                broke_down = True
 
         if broke_up and not broke_down:
             micro_dir[i] = 1
