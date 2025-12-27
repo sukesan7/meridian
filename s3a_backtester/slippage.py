@@ -7,67 +7,77 @@ Differentiates between 'normal' trading hours and 'hot' windows (e.g., market op
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal
-
 import pandas as pd
+from .config import SlippageCfg, Config
 
 Side = Literal["long", "short"]
 
 
-@dataclass
-class SlippageConfig:
-    """Internal slippage parameters."""
+def _get_tick_size(cfg: Config | None, slip_cfg: SlippageCfg | None) -> float:
+    """
+    Resolves tick size with priority:
+    1. Instrument specific (cfg.instrument.tick_size)
+    2. Slippage specific (cfg.slippage.tick_size)
+    3. Global default (0.25)
+    """
+    default = 0.25
 
-    normal_ticks: int = 0
-    hot_ticks: int = 0
-    hot_start: str = "09:30"
-    hot_end: str = "09:40"
-    tick_size: float = 0.25
+    if slip_cfg and slip_cfg.tick_size is not None:
+        default = float(slip_cfg.tick_size)
 
-
-def _get_tick_size(cfg: Any, default: float) -> float:
     if cfg is None:
         return default
+
     inst = getattr(cfg, "instrument", None)
     if inst is not None:
         ts = getattr(inst, "tick_size", None)
         if ts is not None:
             return float(ts)
-    ts = getattr(cfg, "tick_size", None)
-    if ts is not None:
-        return float(ts)
+
     return default
 
 
-def _get_slip_cfg(cfg: Any) -> SlippageConfig | None:
+def _get_slip_cfg(cfg: Any) -> SlippageCfg:
+    """
+    Extracts slippage config.
+    SAFEGUARD: If cfg is None, return a 0-tick config (no side effects).
+    """
     if cfg is None:
-        return None
+        return SlippageCfg(normal_ticks=0, hot_ticks=0)
+
+    default_vals = SlippageCfg()
+
     raw = getattr(cfg, "slippage", None)
     if raw is None:
-        return None
-    if isinstance(raw, SlippageConfig):
+        return default_vals
+
+    if isinstance(raw, SlippageCfg):
         return raw
 
-    return SlippageConfig(
-        normal_ticks=getattr(raw, "normal_ticks", 0),
-        hot_ticks=getattr(raw, "hot_ticks", getattr(raw, "normal_ticks", 0)),
-        hot_start=getattr(raw, "hot_start", "09:30"),
-        hot_end=getattr(raw, "hot_end", "09:40"),
-        tick_size=getattr(raw, "tick_size", 0.25),
+    return SlippageCfg(
+        normal_ticks=int(getattr(raw, "normal_ticks", default_vals.normal_ticks)),
+        hot_ticks=int(getattr(raw, "hot_ticks", default_vals.hot_ticks)),
+        hot_start=str(getattr(raw, "hot_start", default_vals.hot_start)),
+        hot_end=str(getattr(raw, "hot_end", default_vals.hot_end)),
+        tick_size=float(getattr(raw, "tick_size", default_vals.tick_size)),
     )
 
 
-def _is_hot_window(ts: pd.Timestamp, slip_cfg: SlippageConfig) -> bool:
+def _is_hot_window(ts: pd.Timestamp, slip_cfg: SlippageCfg) -> bool:
+    """Checks if the timestamp falls within the high-volatility window."""
     if ts.tzinfo is not None:
         ts_et = ts.tz_convert("America/New_York")
     else:
         ts_et = ts
 
     t = ts_et.time()
-    start = pd.Timestamp(slip_cfg.hot_start).time()
-    end = pd.Timestamp(slip_cfg.hot_end).time()
-    return start <= t < end
+    try:
+        start = pd.Timestamp(slip_cfg.hot_start).time()
+        end = pd.Timestamp(slip_cfg.hot_end).time()
+        return start <= t < end
+    except ValueError:
+        return False
 
 
 def apply_slippage(
@@ -78,10 +88,7 @@ def apply_slippage(
 ) -> float:
     """Calculates executed price after applying slippage rules."""
     slip_cfg = _get_slip_cfg(cfg)
-    if slip_cfg is None:
-        return float(raw_price)
-
-    tick_size = _get_tick_size(cfg, slip_cfg.tick_size)
+    tick_size = _get_tick_size(cfg, slip_cfg)
 
     ticks = slip_cfg.normal_ticks
     if _is_hot_window(ts, slip_cfg):

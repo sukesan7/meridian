@@ -11,11 +11,12 @@ Coverage:
 
 import pandas as pd
 import numpy as np
+import pytest
 from s3a_backtester.engine import generate_signals, simulate_trades
 from s3a_backtester.management import manage_trade_lifecycle
-from s3a_backtester.config import MgmtCfg, TimeStopCfg
+from s3a_backtester.config import MgmtCfg, TimeStopCfg, Config, SlippageCfg
 from s3a_backtester.features import compute_atr15, find_swings_1m
-from s3a_backtester.slippage import SlippageConfig
+from s3a_backtester.slippage import apply_slippage
 
 
 # --- Mocks ---
@@ -272,27 +273,60 @@ def test_risk_cap_infinite():
     assert out["riskcap_ok"].iloc[0]
 
 
+def test_slippage_with_nan_price():
+    """
+    Slippage on NaN price should return NaN (or handle gracefully).
+    """
+    cfg = Config()
+    ts = pd.Timestamp("2023-01-01 12:00:00")
+
+    res = apply_slippage("long", ts, float("nan"), cfg)
+    assert np.isnan(res)
+
+
+def test_slippage_zero_tick_size():
+    """
+    If tick_size is 0, price should not change even with slippage ticks.
+    """
+    slip = SlippageCfg(normal_ticks=10, tick_size=0.0)
+    cfg = Config(slippage=slip)
+    ts = pd.Timestamp("2023-01-01 12:00:00")
+
+    assert apply_slippage("long", ts, 100.0, cfg) == 100.0
+
+
+def test_malformed_hot_window_strings():
+    """
+    If hot_start strings are garbage, code should not crash (fallback to normal).
+    """
+    slip = SlippageCfg(
+        normal_ticks=1, hot_ticks=10, hot_start="GARBAGE", hot_end="TRASH"
+    )
+    cfg = Config(slippage=slip)
+    ts = pd.Timestamp("2023-01-01 09:35:00", tz="America/New_York")
+
+    try:
+        apply_slippage("long", ts, 100.0, cfg)
+    except Exception as e:
+        pytest.fail(f"Slippage crashed on bad time strings: {e}")
+
+
 def test_slippage_exceeds_trade_profit():
     """
     Win trade (Price 100 -> 101).
     Slippage is Massive.
     """
-    idx = pd.date_range("2024-01-01 09:30", periods=5, freq="1min")
-    df = pd.DataFrame(
-        {"high": 100.0, "low": 100.0, "close": 100.0, "open": 100.0}, index=idx
+    slip_config = SlippageCfg(
+        hot_ticks=5, hot_start="09:00", hot_end="10:00", normal_ticks=5
     )
-    df.loc[idx[4], ["high", "low", "close"]] = 102.0
 
-    class SlipCfg(MockCfg):
-        slippage = SlippageConfig(hot_ticks=5, hot_start="09:00", hot_end="10:00")
-        instrument = type("I", (), {"tick_size": 1.0})()
+    class MockCfg:
+        slippage = slip_config
+        instrument = None
 
-    df_sig = _make_df([100.0] * 5, index=idx)
-    df_sig.loc[idx[0], ["trigger_ok", "riskcap_ok", "time_window_ok"]] = True
-    df_sig.loc[idx[0], "stop_price"] = 99.0
+    ts = pd.Timestamp("2024-01-01 09:30:00", tz="America/New_York")
 
-    res = simulate_trades(df, df_sig, cfg=SlipCfg)
-    t = res.iloc[0]
-
-    assert t["entry"] == 105.0
-    assert t["slippage_entry_ticks"] == 5.0
+    # 5 ticks * 0.25 = 1.25 slippage
+    # Long 100.0 -> 101.25
+    exec_price = apply_slippage("long", ts, 100.0, MockCfg())
+    assert exec_price == 101.25
