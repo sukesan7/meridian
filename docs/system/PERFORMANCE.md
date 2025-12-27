@@ -3,7 +3,7 @@
 ## 1. Summary
 This document tracks the runtime characteristics of the Meridian Backtesting Engine. It identifies critical bottlenecks in the Event-Driven loop and outlines the roadmap for moving from Pandas-native logic to high-performance NumPy/Polars implementations.
 
-**Current Throughput (Baseline):** ~15.6M calls / 14.56s (End-to-End Backtest, 12-month NQ)
+**Current Throughput (v1.0.1):** ~15.6M calls / 14.56s (End-to-End Backtest, 12-month NQ)
 
 ---
 
@@ -25,7 +25,7 @@ python scripts/profile_run.py --out outputs/profiles/nq_12m_backtest.prof --top 
 
 ## 3. Bottleneck Analysis (Hotspots)
 
-Based on `cProfile` data from the 2025-12-22 baseline.
+Based on `cProfile` data from the v1.0.1 baseline.
 
 | Rank  | Component               | Function                | Cumulative Time  | Root Cause Analysis                                                                 |
 | :---- | :---------------------- | :---------------------- | :--------------- | :---------------------------------------------------------------------------------- |
