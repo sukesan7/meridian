@@ -3,7 +3,7 @@
 ## 1. Summary
 This document tracks the runtime characteristics of the Meridian Backtesting Engine. It identifies critical bottlenecks in the Event-Driven loop and outlines the roadmap for moving from Pandas-native logic to high-performance NumPy/Polars implementations.
 
-**Current Throughput (v1.0.1):** ~15.6M calls / 14.56s (End-to-End Backtest, 12-month NQ)
+**Current Throughput (v1.0.1):** ~16.5M calls / 12.64s (End-to-End Backtest, 12-month NQ)
 
 ---
 
@@ -27,13 +27,13 @@ python scripts/profile_run.py --out outputs/profiles/nq_12m_backtest.prof --top 
 
 Based on `cProfile` data from the v1.0.1 baseline.
 
-| Rank  | Component               | Function                | Cumulative Time  | Root Cause Analysis                                                                 |
-| :---- | :---------------------- | :---------------------- | :--------------- | :---------------------------------------------------------------------------------- |
-| **1** | **Feature Engineering** | `build_feature_frames`  | **12.77s (87%)** | Global overhead of initial dataframe construction.                                  |
-| **2** | **Resampling Logic**    | `structure.py:trend_5m` | **5.20s**        | **Critical Path.** Pandas `.resample()` and `.agg()` inside the loop are expensive. |
-| **3** | **Data Ingestion**      | `load_minute_df`        | **2.93s**        | `tz_convert` is CPU-intensive due to `zoneinfo` object instantiation per call.      |
-| **4** | **Pattern Recognition** | `find_swings_1m`        | **2.25s**        | Iterative row scanning for swing highs/lows (O(N) Python loop).                     |
-| **5** | **Execution Engine**    | `simulate_trades`       | **1.36s**        | Relatively efficient. Most latency is strictly in data prep, not execution.         |
+| Rank  | Component               | Function                | Cumulative Time  | Root Cause Analysis                                                            |
+| :---- | :---------------------- | :---------------------- | :--------------- | :----------------------------------------------------------------------------- |
+| **1** | **Feature Engineering** | `build_feature_frames`  | **10.38s (82%)** | Global overhead of initial dataframe construction and indicator calculation.   |
+| **2** | **Resampling Logic**    | `structure.py:trend_5m` | **5.04s**        | **Critical Path.** Pandas `.resample()` and `.agg()` operations are expensive. |
+| **3** | **Pattern Recognition** | `find_swings_1m`        | **2.82s**        | Iterative row scanning for swing highs/lows.                                   |
+| **4** | **Execution Engine**    | `simulate_trades`       | **1.82s**        | Highly efficient. The event loop accounts for <15% of total runtime.           |
+| **5** | **Pandas Overhead**     | `__getitem__`           | **3.70s**        | Cumulative cost of dataframe indexing across all modules.                      |
 
 ---
 
