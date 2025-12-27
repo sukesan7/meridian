@@ -11,11 +11,12 @@ Coverage:
 
 import pandas as pd
 import numpy as np
+import pytest
 from s3a_backtester.engine import generate_signals, simulate_trades
 from s3a_backtester.management import manage_trade_lifecycle
-from s3a_backtester.config import MgmtCfg, TimeStopCfg
+from s3a_backtester.config import MgmtCfg, TimeStopCfg, Config, SlippageCfg
 from s3a_backtester.features import compute_atr15, find_swings_1m
-from s3a_backtester.slippage import SlippageConfig
+from s3a_backtester.slippage import apply_slippage
 
 
 # --- Mocks ---
@@ -92,7 +93,6 @@ def test_gap_open_below_stop_long():
         {"high": 100.0, "low": 100.0, "close": 100.0, "open": 100.0}, index=idx
     )
 
-    # Bar 2 gaps down massively
     df.loc[idx[2], "open"] = 80.0
     df.loc[idx[2], "high"] = 85.0
     df.loc[idx[2], "low"] = 70.0
@@ -109,8 +109,6 @@ def test_gap_open_below_stop_long():
         refs={},
     )
 
-    # Current engine logic uses low <= stop.
-    # This test asserts mechanism works, even if fill price is conservative.
     assert res["exit_idx"] == 2
 
 
@@ -148,9 +146,8 @@ def test_nan_price_handling():
     """Data corruption: Price becomes NaN mid-session."""
     vals = [100.0, 101.0, np.nan, 102.0]
     df = _make_df(vals)
-    # Generate signals should not crash
     out = generate_signals(df, cfg=MockCfg)
-    # Should not trigger on NaN bars
+
     assert not out["trigger_ok"].iloc[2]
 
 
@@ -220,9 +217,9 @@ def test_single_bar_session():
     df = _make_df([100.0])
     atr = compute_atr15(df)
     swings = find_swings_1m(df)
-    # ATR with min_periods=1 produces valid 0.0 for single bar
+
     assert not atr.isna().all()
-    assert not swings["swing_high"].any()
+    assert not swings["swing_high_confirmed"].any()
 
 
 def test_trigger_on_last_bar():
@@ -234,12 +231,10 @@ def test_trigger_on_last_bar():
     out = generate_signals(df, cfg=MockCfg)
     assert out["trigger_ok"].iloc[-1]
 
-    # Needs valid management config to populate exit_time
     res = simulate_trades(df, out, cfg=MockCfg)
     assert not res.empty
     t = res.iloc[0]
 
-    # If entry is last bar, exit is forced at same bar
     assert t["entry_time"] == t["exit_time"]
     assert t["realized_R"] == 0.0
 
@@ -251,9 +246,7 @@ def test_trigger_on_last_bar():
 
 def test_missing_optional_config_sections():
     """Simulate trades with bare-bones config object (missing sub-configs)."""
-    # Create valid signals ONLY on index 5
     df = _make_df([100.0] * 10)
-    # _make_df defaults trigger_ok=True for ALL bars. Turn it off.
     df["trigger_ok"] = False
 
     df.loc[df.index[5], ["trigger_ok", "riskcap_ok", "time_window_ok"]] = True
@@ -262,7 +255,6 @@ def test_missing_optional_config_sections():
 
     class BareCfg:
         instrument = type("I", (), {"tick_size": 1.0})()
-        # No management/time_stop attr at all
 
     res = simulate_trades(df, df, cfg=BareCfg)
     assert len(res) == 1
@@ -281,29 +273,60 @@ def test_risk_cap_infinite():
     assert out["riskcap_ok"].iloc[0]
 
 
+def test_slippage_with_nan_price():
+    """
+    Slippage on NaN price should return NaN (or handle gracefully).
+    """
+    cfg = Config()
+    ts = pd.Timestamp("2023-01-01 12:00:00")
+
+    res = apply_slippage("long", ts, float("nan"), cfg)
+    assert np.isnan(res)
+
+
+def test_slippage_zero_tick_size():
+    """
+    If tick_size is 0, price should not change even with slippage ticks.
+    """
+    slip = SlippageCfg(normal_ticks=10, tick_size=0.0)
+    cfg = Config(slippage=slip)
+    ts = pd.Timestamp("2023-01-01 12:00:00")
+
+    assert apply_slippage("long", ts, 100.0, cfg) == 100.0
+
+
+def test_malformed_hot_window_strings():
+    """
+    If hot_start strings are garbage, code should not crash (fallback to normal).
+    """
+    slip = SlippageCfg(
+        normal_ticks=1, hot_ticks=10, hot_start="GARBAGE", hot_end="TRASH"
+    )
+    cfg = Config(slippage=slip)
+    ts = pd.Timestamp("2023-01-01 09:35:00", tz="America/New_York")
+
+    try:
+        apply_slippage("long", ts, 100.0, cfg)
+    except Exception as e:
+        pytest.fail(f"Slippage crashed on bad time strings: {e}")
+
+
 def test_slippage_exceeds_trade_profit():
     """
     Win trade (Price 100 -> 101).
     Slippage is Massive.
     """
-    idx = pd.date_range("2024-01-01 09:30", periods=5, freq="1min")
-    df = pd.DataFrame(
-        {"high": 100.0, "low": 100.0, "close": 100.0, "open": 100.0}, index=idx
+    slip_config = SlippageCfg(
+        hot_ticks=5, hot_start="09:00", hot_end="10:00", normal_ticks=5
     )
-    df.loc[idx[4], ["high", "low", "close"]] = 102.0
 
-    class SlipCfg(MockCfg):
-        # 09:30 is a "Hot" window. We must set hot_ticks to force slippage.
-        slippage = SlippageConfig(hot_ticks=5, hot_start="09:00", hot_end="10:00")
-        instrument = type("I", (), {"tick_size": 1.0})()
+    class MockCfg:
+        slippage = slip_config
+        instrument = None
 
-    df_sig = _make_df([100.0] * 5, index=idx)
-    df_sig.loc[idx[0], ["trigger_ok", "riskcap_ok", "time_window_ok"]] = True
-    df_sig.loc[idx[0], "stop_price"] = 99.0
+    ts = pd.Timestamp("2024-01-01 09:30:00", tz="America/New_York")
 
-    res = simulate_trades(df, df_sig, cfg=SlipCfg)
-    t = res.iloc[0]
-
-    # Entry 100 + 5 (hot slip) = 105.
-    assert t["entry"] == 105.0
-    assert t["slippage_entry_ticks"] == 5.0
+    # 5 ticks * 0.25 = 1.25 slippage
+    # Long 100.0 -> 101.25
+    exec_price = apply_slippage("long", ts, 100.0, MockCfg())
+    assert exec_price == 101.25

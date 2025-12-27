@@ -74,7 +74,6 @@ def simulate_trades(
     }
     for col, val in defaults.items():
         if col not in df:
-            # Cast val to Any to avoid overload resolution issues on assignment
             df[col] = cast(Any, val)
 
     direction = pd.to_numeric(df["direction"], errors="coerce").fillna(0).astype(int)
@@ -100,10 +99,16 @@ def simulate_trades(
     mgmt_cfg: MgmtCfg | None = None
     time_cfg: TimeStopCfg | None = None
     if cfg is not None:
-        tick_size = getattr(cfg, "tick_size", tick_size)
         inst = getattr(cfg, "instrument", None)
         if inst is not None:
             tick_size = getattr(inst, "tick_size", tick_size)
+
+        if hasattr(cfg, "slippage"):
+            slip = getattr(cfg, "slippage")
+            tick_size = getattr(slip, "tick_size", tick_size)
+
+        tick_size = getattr(cfg, "tick_size", tick_size)
+
         mgmt_cfg = getattr(cfg, "management", None)
         time_cfg = getattr(cfg, "time_stop", None)
 
@@ -292,6 +297,7 @@ def generate_signals(
 ) -> pd.DataFrame:
     """
     Computes all signal columns (Unlock, Zone, Trigger) in a vectorized manner.
+    Now uses STRICTLY CONFIRMED swings for stop placement.
     """
     out = df_1m.copy()
 
@@ -308,7 +314,6 @@ def generate_signals(
     }
     for col, val in std_defaults.items():
         if col not in out:
-            # Cast val to Any to ensure assignment works on mixed-type DataFrame
             out[col] = cast(Any, val)
 
     idx = cast(pd.DatetimeIndex, out.index)
@@ -474,6 +479,10 @@ def generate_signals(
     inst = getattr(cfg, "instrument", None) if cfg is not None else None
     tick_size = float(getattr(inst, "tick_size", tick_size) or tick_size)
 
+    if hasattr(cfg, "slippage"):
+        slip = getattr(cfg, "slippage")
+        tick_size = float(getattr(slip, "tick_size", tick_size) or tick_size)
+
     max_mult = 1.25
     risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
     max_mult = float(getattr(risk_cfg, "max_stop_or_mult", max_mult) or max_mult)
@@ -488,39 +497,16 @@ def generate_signals(
 
     direction = out["direction"].astype("int8")
 
-    if (
-        ("swing_lo" in out.columns)
-        or ("swing_low" in out.columns)
-        or ("swing_hi" in out.columns)
-        or ("swing_high" in out.columns)
-    ):
-        swing_lo = (
-            out["swing_lo"].astype(bool)
-            if "swing_lo" in out.columns
-            else (
-                out["swing_low"].astype(bool)
-                if "swing_low" in out.columns
-                else pd.Series(False, index=out.index)
-            )
-        )
-        swing_hi = (
-            out["swing_hi"].astype(bool)
-            if "swing_hi" in out.columns
-            else (
-                out["swing_high"].astype(bool)
-                if "swing_high" in out.columns
-                else pd.Series(False, index=out.index)
-            )
-        )
-
-        last_swing_lo = out["low"].where(swing_lo).groupby(dates).ffill()
-        last_swing_hi = out["high"].where(swing_hi).groupby(dates).ffill()
+    if "last_swing_low_price" in out.columns and "last_swing_high_price" in out.columns:
+        last_swing_lo = out["last_swing_low_price"].astype(float)
+        last_swing_hi = out["last_swing_high_price"].astype(float)
 
         cand_stop = pd.Series(np.nan, index=out.index, dtype=float)
         longs = direction > 0
         shorts = direction < 0
-        cand_stop.loc[longs] = (last_swing_lo.loc[longs] - tick_size).astype(float)
-        cand_stop.loc[shorts] = (last_swing_hi.loc[shorts] + tick_size).astype(float)
+
+        cand_stop.loc[longs] = last_swing_lo.loc[longs] - tick_size
+        cand_stop.loc[shorts] = last_swing_hi.loc[shorts] + tick_size
 
         stop_price = stop_price.where(stop_price.notna(), cand_stop)
 

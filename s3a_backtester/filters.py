@@ -28,12 +28,14 @@ def build_session_filter_mask(
     if filters_cfg is None:
         return pd.Series(True, index=df.index, name="session_filter_ok")
 
-    # Safe attribute access
-    enable_tiny_or = bool(getattr(filters_cfg, "enable_tiny_or", True))
+    enable_tiny_or = bool(getattr(filters_cfg, "skip_tiny_or", True))
     tiny_or_mult = float(getattr(filters_cfg, "tiny_or_mult", 0.25))
+
     enable_low_atr = bool(getattr(filters_cfg, "enable_low_atr", True))
+
     low_atr_percentile = float(getattr(filters_cfg, "low_atr_percentile", 20.0))
-    enable_news = bool(getattr(filters_cfg, "enable_news_blackout", True))
+
+    enable_news = bool(getattr(filters_cfg, "news_blackout", True))
     enable_dom = bool(getattr(filters_cfg, "enable_dom_filter", True))
 
     session_idx = pd.Index([ts.date() for ts in df.index], name="session")

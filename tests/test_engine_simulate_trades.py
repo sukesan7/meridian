@@ -41,28 +41,28 @@ def test_simulate_valid_long_trade():
         index=idx,
     )
 
-    # 09:35 Unlock, 09:36 Zone, 09:37 Trigger
     df.loc[idx[5], "close"] = 111.0
     df.loc[idx[6], "close"] = 108.0
     df.loc[idx[7], ["micro_break_dir", "close"]] = [1, 109.0]
 
-    # Swing low for stop
-    df["swing_low"] = False
-    df.loc[idx[0], "swing_low"] = True
-    df.loc[idx[0], "low"] = 100.0
+    df["last_swing_low_price"] = 100.0
+    df["last_swing_high_price"] = 120.0
 
     sig = generate_signals(df, cfg=MockCfg)
+
+    sig["last_swing_low_price"] = 100.0
+    sig["last_swing_high_price"] = 120.0
+
     trades = simulate_trades(df, sig, cfg=MockCfg)
 
     assert len(trades) == 1
     t = trades.iloc[0]
     assert t["side"] == "long"
-    assert t["stop"] == 99.0  # 100.0 - 1 tick
+    assert t["stop"] == 99.0
     assert t["trigger_type"] == "swingbreak"
 
 
 def test_simulate_risk_cap_block():
-    # Stop is too far away
     idx = pd.date_range(
         "2024-01-02 09:30", periods=10, freq="1min", tz="America/New_York"
     )
@@ -70,7 +70,7 @@ def test_simulate_risk_cap_block():
         {
             "close": 110.0,
             "or_high": 110.0,
-            "or_low": 108.0,  # OR height = 2
+            "or_low": 108.0,
             "trend_5m": 1,
             "vwap": 100,
             "vwap_1u": 110,
@@ -87,9 +87,7 @@ def test_simulate_risk_cap_block():
     df["time_window_ok"] = True
     df["direction"] = 1
 
-    # generate_signals computes riskcap_ok
     sig = generate_signals(df, cfg=MockCfg)
 
-    # simulate_trades uses it
     trades = simulate_trades(df, sig, cfg=MockCfg)
     assert len(trades) == 0

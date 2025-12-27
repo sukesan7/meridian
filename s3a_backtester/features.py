@@ -5,7 +5,7 @@ Computes core quantitative features for the strategy, including:
 - Session Reference Levels (OR, PDH, PDL)
 - VWAP Bands and standard deviations
 - Volatility measures (ATR15)
-- Swing detection
+- Swing detection (Strictly Delayed/Confirmed)
 """
 
 from __future__ import annotations
@@ -129,16 +129,29 @@ def find_swings_1m(
     high_col: str = "high",
     low_col: str = "low",
 ) -> pd.DataFrame:
-    """Identifies fractal swing points using a rolling window approach."""
+    """
+    Identifies fractal swing points using a STRICTLY DELAYED (Past-Only) approach.
+
+    A swing is only marked at index `t` if the pivot at `t - rb` is confirmed.
+    This eliminates look-ahead bias.
+
+    Outputs:
+    - swing_high_confirmed (bool): Event trigger at confirmation time.
+    - swing_low_confirmed (bool): Event trigger at confirmation time.
+    - last_swing_high_price (float): Forward-filled price of the last confirmed pivot.
+    - last_swing_low_price (float): Forward-filled price of the last confirmed pivot.
+    """
     if lb < 1 or rb < 1:
         raise ValueError("lb and rb must be >= 1")
 
     df = df1.copy()
-    df["swing_high"] = False
-    df["swing_low"] = False
+
+    df["swing_high_confirmed"] = False
+    df["swing_low_confirmed"] = False
+    df["last_swing_high_price"] = np.nan
+    df["last_swing_low_price"] = np.nan
 
     idx = df.index
-    # Explicit type annotation to handle Union type assignment
     day_keys: Any
 
     if isinstance(idx, pd.DatetimeIndex):
@@ -152,28 +165,47 @@ def find_swings_1m(
 
     for _, day_df in df.groupby(day_keys):
         n = len(day_df)
-        if n == 0:
+        if n < lb + rb + 1:
             continue
 
         highs = day_df[high_col].to_numpy()
         lows = day_df[low_col].to_numpy()
 
-        swing_high = np.zeros(n, dtype=bool)
-        swing_low = np.zeros(n, dtype=bool)
+        day_indices = day_df.index
 
-        for i in range(lb, n - rb):
-            hi = highs[i]
-            lo = lows[i]
+        s_high_conf = np.zeros(n, dtype=bool)
+        s_low_conf = np.zeros(n, dtype=bool)
 
-            if np.all(hi > highs[i - lb : i]) and np.all(
-                hi >= highs[i + 1 : i + rb + 1]
-            ):
-                swing_high[i] = True
+        s_last_high = np.full(n, np.nan, dtype=np.float64)
+        s_last_low = np.full(n, np.nan, dtype=np.float64)
 
-            if np.all(lo < lows[i - lb : i]) and np.all(lo <= lows[i + 1 : i + rb + 1]):
-                swing_low[i] = True
+        for i in range(lb + rb, n):
+            pivot_idx = i - rb
 
-        df.loc[day_df.index, "swing_high"] = swing_high
-        df.loc[day_df.index, "swing_low"] = swing_low
+            pivot_h = highs[pivot_idx]
+
+            left_side_h = highs[pivot_idx - lb : pivot_idx]
+            right_side_h = highs[pivot_idx + 1 : pivot_idx + rb + 1]
+
+            if np.all(pivot_h > left_side_h) and np.all(pivot_h >= right_side_h):
+                s_high_conf[i] = True
+                s_last_high[i] = pivot_h
+
+            pivot_l = lows[pivot_idx]
+            left_side_l = lows[pivot_idx - lb : pivot_idx]
+            right_side_l = lows[pivot_idx + 1 : pivot_idx + rb + 1]
+
+            if np.all(pivot_l < left_side_l) and np.all(pivot_l <= right_side_l):
+                s_low_conf[i] = True
+                s_last_low[i] = pivot_l
+
+        df.loc[day_indices, "swing_high_confirmed"] = s_high_conf
+        df.loc[day_indices, "swing_low_confirmed"] = s_low_conf
+
+        temp_high = pd.Series(s_last_high, index=day_indices)
+        temp_low = pd.Series(s_last_low, index=day_indices)
+
+        df.loc[day_indices, "last_swing_high_price"] = temp_high.ffill()
+        df.loc[day_indices, "last_swing_low_price"] = temp_low.ffill()
 
     return df

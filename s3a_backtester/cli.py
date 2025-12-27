@@ -178,15 +178,15 @@ def build_feature_frames(
 
     swings_1m = find_swings_1m(df1)
     if isinstance(swings_1m, pd.DataFrame):
-        if "swing_high" in swings_1m.columns:
-            df1["swing_high"] = swings_1m["swing_high"].astype(bool)
-        if "swing_low" in swings_1m.columns:
-            df1["swing_low"] = swings_1m["swing_low"].astype(bool)
+        if "swing_high_confirmed" in swings_1m.columns:
+            df1["swing_high_confirmed"] = swings_1m["swing_high_confirmed"].astype(bool)
+        if "swing_low_confirmed" in swings_1m.columns:
+            df1["swing_low_confirmed"] = swings_1m["swing_low_confirmed"].astype(bool)
 
-        if "swing_high" in df1.columns:
-            df1["swing_hi"] = df1["swing_high"]
-        if "swing_low" in df1.columns:
-            df1["swing_lo"] = df1["swing_low"]
+        if "last_swing_high_price" in swings_1m.columns:
+            df1["last_swing_high_price"] = swings_1m["last_swing_high_price"]
+        if "last_swing_low_price" in swings_1m.columns:
+            df1["last_swing_low_price"] = swings_1m["last_swing_low_price"]
 
     mb = micro_swing_break(df1)
     if isinstance(mb, pd.DataFrame) and "micro_break_dir" in mb.columns:

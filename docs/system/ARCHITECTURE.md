@@ -10,7 +10,7 @@ graph TD
 
     subgraph "Pre-Calculation Phase"
         Feat -->|Resample| T5[5m Trend Logic]
-        Feat -->|Scan| Swing[Swing High/Low Detection]
+        Feat -->|Scan| Swing[Confirmed Swing Detection]
         Feat -->|Compute| Ind[VWAP / Bands / OR]
     end
 
@@ -28,17 +28,19 @@ graph TD
 
 ### 2.1 Feature Engine (`/features`)
 Responsible for transforming raw OHLCV data into tradable signals.
-* **Hybrid Approach:** Heavy calculations (e.g., VWAP, Moving Averages) are pre-calculated vectorially to minimize latency in the event loop.
-* **Look-Ahead Safety:** All features use strict right-edge labeling (`label='right'`) to ensure `t` features only know `t-1` data.
+* **Hybrid Approach:** Heavy calculations (e.g., VWAP, ATR) are pre-calculated vectorially.
+* **Look-Ahead Safety:**
+    * All features use strict right-edge labeling.
+    * **Swing Detection:** Uses a `find_swings_1m` algorithm that requires `rb` (right-bars) confirmation before marking a pivot, preventing look-ahead bias.
 
 ### 2.2 Signal Logic (`/logic`)
 Implements the specific trading strategy (Strategy 3A).
 * **Constraints:** `OR Break`, `Pullback Zone`, `Micro-Structure Entry`.
-* **Gating:** `disqualify_after_unlock` ensures failed setups are discarded immediately, freeing memory.
+* **Gating:** `disqualify_after_unlock` ensures failed setups are discarded immediately.
 
 ### 2.3 Execution Simulator (`/engine`)
 A deterministic simulation of an exchange matching engine.
-* **Slippage Model:** Dynamic slippage based on volatility regimes (Normal vs. "Hot Minutes").
+* **Slippage Model:** Dynamic slippage based on volatility regimes.
 * **Lifecycle:** Handles `TP1` scaling, `Breakeven` adjustments, and `Time-Based Exits`.
 
 ## 3. Reliability & Reproducibility

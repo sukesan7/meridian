@@ -1,74 +1,109 @@
 # Meridian
 
-[![CI](https://img.shields.io/github/actions/workflow/status/sukesan7/meridian/ci.yml?branch=main&label=CI&logo=github)](https://github.com/sukesan7/meridian/actions)
-[![Coverage](https://img.shields.io/codecov/c/github/sukesan7/meridian?token=TOKEN&logo=codecov)](https://codecov.io/gh/sukesan7/meridian)
+[![CI](https://img.shields.io/github/actions/workflow/status/sukesan7/meridian/ci.yml?branch=main&label=Build&logo=github)](https://github.com/sukesan7/meridian/actions)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type Checked: Mypy](https://img.shields.io/badge/type_checked-mypy-blue.svg)](https://mypy-lang.org/)
 
-**Meridian** is a deterministic, event-driven backtesting engine designed for the simulation of intraday futures strategies. It prioritizes correctness, reproducibility, and strict session handling over raw execution speed, serving as a rapid prototyping environment for **Strategy 3A** (VWAP Trend Pullback) logic.
+**Meridian** is a deterministic, event-driven backtesting engine created for the high-fidelity simulation of intraday futures strategies. It prioritizes correctness, causal integrity, and reproducibility over raw execution speed, serving as a rapid prototyping environment for **Strategy 3A** (VWAP Trend Pullback) logic.
+
+The system is currently deployed to validate a singular strategy (**Strategy 3A**) on **Nasdaq-100 (NQ)** futures data, enforcing strict session boundaries and regime-adaptive execution models.
 
 ---
 
-## 1. Core Philosophy
+## 1. Core Philosophy & Architecture
 
-Quantitative infrastructure often suffers from lookahead bias, implicit assumptions, and irreproducibility. Meridian addresses these by enforcing a strict **State Machine** architecture for signal generation and trade management.
+Meridian addresses the "Backtest-Reality Gap" prevalent in quantitative research by enforcing a strict **Data Contract** and **State Machine** execution model.
 
-* **Deterministic Execution:** Identical data, configuration, and seeds guarantee bit-perfect identical artifacts.
-* **No Lookahead:** Signal logic is causally strictly enforced; future bars are inaccessible during the decision phase.
-* **Session-Aware:** Native handling of exchange timezones (America/New_York) and RTH/ETH boundaries.
-* **Realistic Simulation:** Models execution friction including spread, slippage (time-variant), and time-based forced exits.
-* **Stateful Logic:** Supports multi-stage signal progression (`Unlock` $\to$ `Zone` $\to$ `Trigger`) rather than simple vector cross-overs.
+### Key Engineering Principles
+* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This property is enforced via regression tests in the CI/CD pipeline.
+* **Causal Integrity (No Look-Ahead):** Signal generation logic enforces strict `n-bar` delays on pivoting indicators (e.g., Swing Highs). Future bars are inaccessible during the decision phase, eliminating the most common source of backtest overfitting.
+* **Session-Aware Execution:** Native handling of exchange timezones (`America/New_York`) and RTH (09:30–16:00 ET) boundaries prevents signal leakage across trading sessions.
+* **Regime-Adaptive Friction:** Slippage models are time-variant, applying higher friction during high-volatility windows (e.g., the "Hot Window" during the 09:30 Opening Range).
 
----
-
-## 2. System Architecture
-
+### Data Flow Pipeline
 The engine operates as a unidirectional pipeline, transforming raw vendor data into auditable trade artifacts.
 
-### Data Flow
-1.  **Ingestion:** Raw 1-minute OHLCV is normalized to a strict parquet schema.
-2.  **Feature Engineering:** Session-scoped indicators (Opening Range, Anchored VWAP, ATR) are computed.
-3.  **Signal Generation:** A vectorized state machine identifies valid setups based on market structure.
-4.  **Execution Simulation:** An event loop processes signals, applying risk rules, slippage models, and lifecycle management (TP/SL).
-5.  **Robustness Analysis:** Walk-Forward Optimization (WFO) and Monte Carlo methods validate parameter stability.
+```mermaid
+graph LR
+    A[Raw Parquet] --> B(Feature Engine)
+    B --> C{State Machine}
+    C -->|Events| D[Execution Simulator]
+    D -->|Fills| E[Trade Artifacts]
+    E --> F[Performance Analytics]
+```
 
-### Repository Layout
+---
+
+## 2. Strategy Logic (Strategy 3A)
+
+The engine implements a multi-stage finite state machine (FSM) to identify high-probability setups. Unlike simple vector crossovers, **Strategy 3A** requires a specific sequence of market states:
+
+1.  **Unlock Phase:** The system monitors for a volatility expansion (Opening Range Breakout) aligned with the 5-minute trend structure.
+2.  **Zone Phase:** Once unlocked, the engine waits for a mean-reversion pullback into the value area (VWAP +- 1$\sigma$).
+3.  **Trigger Phase:** Trades are executed only upon confirmation of a micro-structure breakout (Confirmed Swing High/Low) within the value zone.
+
+### Logic Visualization (v1.0.1)
+*Trace of the State Machine during a typical session. Note the strict delay in Swing High (Red Triangle) confirmation, proving causal integrity.*
+
+![Strategy Logic Trace](assets/v1_0_1_strategy_logic_trace.png)
+
+---
+
+## 3. Performance (v1.0.1 Baseline)
+
+*Audited results derived from a 12-month In-Sample (IS) period on NQ (2024-2025). Metrics reflect the correction of look-ahead bias and the enabling of news-day trading.*
+
+| Metric         | Value      | Description                                |
+| :------------- | :--------- | :----------------------------------------- |
+| **Expectancy** | **0.20 R** | Risk-adjusted return per trade (Realized). |
+| **Win Rate**   | **59.0%**  | Trend-following profile.                   |
+| **SQN**        | **1.69**   | System Quality Number.                     |
+| **Drawdown**   | **4.26 R** | Maximum Peak-to-Valley (Walk-Forward).     |
+
+### Market Regime Analysis
+*The engine filters sessions based on volatility regimes (True Range Distribution), rejecting low-opportunity "Compressed" days.*
+
+![Vol Regime](assets/v1_0_1_market_regime_volatility.png)
+
+---
+
+## 4. Repository Layout
+
+The project follows a modular package structure designed for maintainability and testing.
+
 ```text
 .
 ├── .github/workflows/                 # CI/CD pipeline definition
-├── configs/                           # Strategy execution parameters
-├── data/                              # Data lake (excluded from git)
-│   ├── raw/                           # Immutable source data
-│   └── vendor_parquet/                # Normalized, RTH-sliced schema
-├── docs/                              # System documentation & engineering logs
-├── notebooks/                         # Research & prototyping environment
+├── configs/                           # Strategy execution parameters (YAML)
+├── data/                              # Data lake (parquet storage)
+├── docs/                              # System documentation & performance reports
+├── assets/                            # Visualization artifacts
 ├── s3a_backtester/                    # Core package source
 │   ├── cli.py                         # Entrypoint (backtest / walkforward / mc)
 │   ├── engine.py                      # Signal state machine & event loop
+│   ├── features.py                    # Vectorized indicator calculation
 │   ├── management.py                  # Trade lifecycle (TP/SL/Time-stops)
+│   ├── slippage.py                    # Volatility-adjusted execution models
 │   ├── walkforward.py                 # Rolling IS/OOS validation engine
-│   ├── monte_carlo.py                 # Bootstrap resampling engine
-│   └── ...                            # Helper modules (features, slippage, etc.)
-├── scripts/                           # Utility scripts (ETL, Reporting)
-│   ├── databento_fetch_continuous.py
-│   ├── normalize_continuous_to_vendor_parquet.py
-│   ├── make_report.py
-│   └── quickstart.ps1                 # One-click demo runner
+│   └── ...
+├── scripts/                           # ETL, Reporting, and Profiling utilities
 ├── tests/                             # Unit & Integration suite (pytest)
-├── pyproject.toml                     # Dependency management
 └── README.md
 ```
 
 ---
 
-## 3. Quick Start
+## 5. Quick Start
 
 ### Prerequisites
 * Python 3.10+
-* Dependencies: `pandas`, `numpy`, `pyarrow`, `scipy`, `pyyaml`
+* Dependencies managed via `pip` (Pandas, NumPy, PyArrow, SciPy, PyYAML)
 
 ### Installation
+Clone the repository and install with development dependencies (required for running tests and synthetic data generation).
+
 ```bash
 # Clone the repository
 git clone [https://github.com/sukesan7/meridian.git](https://github.com/sukesan7/meridian.git)
@@ -78,12 +113,12 @@ cd meridian
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install strictly pinned dependencies
+# Install strictly pinned dependencies + dev tools
 pip install -e ".[dev]"
 ```
 
-### Running a Demo Simulation
-To validate the installation without requiring proprietary data, run the test suite which generates synthetic market data on the fly:
+### Running a Demo (No Data Required)
+If you do not possess proprietary NQ futures data, you can verify the engine's logic by running the test suite. The tests generate **synthetic market data** on the fly to validate the execution engine, slippage models, and state machine.
 
 ```bash
 # Run full test suite with verbose output
@@ -92,48 +127,45 @@ pytest -v
 
 ---
 
-## 4. Operational Workflow
+## 6. Usage & Workflows
 
-Meridian exposes a CLI entrypoint `meridian-run` (or `threea-run`) for all simulation modes.
+Meridian utilizes a unified CLI `meridian-run` for all simulation modes.
 
-### A. Standard Backtest
-Runs a single simulation over a fixed period.
+### A. Standard Backtest (In-Sample)
+Executes the strategy over a fixed period and generates `trades.parquet` and `signals.parquet`.
 
 ```bash
 meridian-run backtest \
   --config configs/base.yaml \
   --data data/vendor_parquet/NQ/NQ_2024_RTH.parquet \
-  --run-id nq_research_01
+  --run-id v1_0_1_baseline
 ```
-* **Artifacts:** `summary.json`, `trades.parquet`, `signals.parquet`
 
-### B. Walk-Forward Analysis (WFO)
-Performs rolling window validation (e.g., 3-month In-Sample, 1-month Out-of-Sample) to test parameter stationarity.
+### B. Walk-Forward Analysis (Robustness)
+Performs rolling-window validation to detect overfitting. Default: 63-day Train / 21-day Test.
 
 ```bash
 meridian-run walkforward \
   --config configs/base.yaml \
   --data data/vendor_parquet/NQ/NQ_2024_RTH.parquet \
   --is-days 63 --oos-days 21 \
-  --run-id nq_wfo_01
+  --run-id v1_0_1_wfo
 ```
-* **Artifacts:** `is_summary.csv`, `oos_summary.csv`, `oos_trades.parquet`
 
-### C. Monte Carlo Simulation
-Applies bootstrap resampling (IID or Block) to the trade distribution to estimate tail risks.
+### C. Monte Carlo (Risk Assessment)
+Applies block-bootstrap resampling to the trade distribution to estimate tail risks and drawdown probabilities.
 
 ```bash
 meridian-run monte-carlo \
   --config configs/base.yaml \
-  --trades-file outputs/backtest/nq_research_01/trades.parquet \
-  --n-paths 2000 --risk-per-trade 0.01 \
-  --run-id nq_mc_01
+  --trades outputs/backtest/v1_0_1_baseline/trades.parquet \
+  --n-paths 2500 \
+  --seed 7
 ```
-* **Artifacts:** `mc_samples.parquet`, `summary.json` (Drawdown & CAGR distributions)
 
 ---
 
-## 5. Engineering Standards & Quality Gates
+## 7. Engineering Standards & Quality Gates
 
 This project enforces strict software engineering standards suitable for production environments.
 
@@ -149,7 +181,7 @@ pre-commit run --all-files
 
 ---
 
-## 6. Data Contract
+## 8. Data Contract
 
 Meridian requires 1-minute OHLCV data normalized to the `vendor_parquet` schema.
 
@@ -163,10 +195,14 @@ The engine internally converts UTC timestamps to `America/New_York` to align wit
 
 ---
 
-## 7. Roadmap (v2.0.0)
-* **Performance:** Migration of `engine.py` from Pandas/NumPy to **Polars** (Rust) for improved vectorization performance and lower memory footprint.
-* **Multi-Asset Support:** Architecture upgrades to support execution logic on ES (S&P 500), Equities, and ETFs.
-* **Optimization:** Integration of a genetic optimizer for parameter tuning.
+## 9. Future Roadmap
+
+* **Performance:** Migration of the core `engine.py` loop from Pandas/NumPy to **Polars** (Rust) for improved vectorization throughput and zero-copy memory management.
+* **Statistical Rigor:** Implementation of **Combinatorial Purged Cross-Validation (CPCV)** and **Deflated Sharpe Ratio (DSR)** to explicitly quantify and penalize multiple testing bias in strategy selection.
+* **Market Microstructure:** Upgrade of execution models to include **Vectorized Market Impact** (e.g., Square Root Law) for liquidity-dependent slippage, alongside L2 order book pressure integration.
+* **Generative Risk:** Integration of **Hidden Markov Models (HMM)** to generate synthetic market regimes for robust Monte Carlo stress testing beyond historical bootstrapping.
+* **Multi-Asset Support:** Architecture extensions to support execution logic on Equities, ETFs, and other futures contracts.
+* **Strategy Expansion:** Implementation and validation of complementary strategies (**Strategy 1A**, **2A**, **4A**) to diversify the portfolio.
 
 ---
 

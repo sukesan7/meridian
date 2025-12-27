@@ -22,8 +22,9 @@ Once unlocked, the algo waits for a mean-reversion pullback into value.
 
 ### 2.3 The "Trigger" (State 3)
 Entry occurs on micro-structure validation within the Zone.
-* **Signal:** 1-Minute Micro-Swing Break (breaking the most recent high in a Long setup).
-* **Confirmation:** Must occur while price is interacting with the Zone.
+* **Signal:** 1-Minute Micro-Swing Break (BOS).
+* **Confirmation:** Requires a **Confirmed Swing High** (for Longs).
+    * *Integrity Note:* The swing high used for the break must be fully formed and confirmed (2 bars past peak) *before* the breakout candle occurs.
 
 ## 3. Risk & Execution
 
@@ -32,7 +33,7 @@ Entry occurs on micro-structure validation within the Zone.
 * **Risk Cap:** If `(Entry - Stop)` > `1.25 * OR_Height`, the trade is skipped (Volatility too high).
 
 ### 3.2 Management
-* **Stop Loss:** Placed at the most recent invalidation swing.
+* **Stop Loss:** Placed at the most recent **Confirmed** Swing Low (Longs).
 * **Target 1:** +1R (Scale 50%, Move Stop to Breakeven).
-* **Target 2:** Technical Target (Measured Move or PDH/PDL).
+* **Target 2:** +2R (Final Exit).
 * **Time Stop:** Exit if stuck for >15 minutes without hitting TP1.
