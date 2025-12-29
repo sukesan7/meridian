@@ -1,6 +1,6 @@
 # Meridian
 
-[![CI](https://img.shields.io/github/actions/workflow/status/sukesan7/meridian/ci.yml?branch=main&label=Build&logo=github)](https://github.com/sukesan7/meridian/actions)
+[![CI](https://github.com/sukesan7/meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/sukesan7/meridian/actions)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -17,7 +17,7 @@ The system is currently deployed to validate a singular strategy (**Strategy 3A*
 Meridian addresses the "Backtest-Reality Gap" prevalent in quantitative research by enforcing a strict **Data Contract** and **State Machine** execution model.
 
 ### Key Engineering Principles
-* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This property is enforced via regression tests in the CI/CD pipeline.
+* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This is enforced via a **Bit-Perfect Determinism Gate** in CI, which compares trade logs byte-for-byte across separate runs.
 * **Causal Integrity & Latency Simulation:** The engine adheres to strict causality in both signal generation and execution. It enforces `n-bar` delays on indicators and simulates execution latency by filling orders at the Next Bar Open, eliminating the "optimistic fill" bias common in close-on-close backtesters.
 * **Session-Aware Execution:** Native handling of exchange timezones (`America/New_York`) and RTH (09:30–16:00 ET) boundaries prevents signal leakage across trading sessions.
 * **Regime-Adaptive Friction:** Slippage models are time-variant, applying higher friction during high-volatility windows (e.g., the "Hot Window" during the 09:30 Opening Range).
@@ -99,10 +99,10 @@ The project follows a modular package structure designed for maintainability and
 
 ### Prerequisites
 * Python 3.10+
-* Dependencies managed via `pip` (Pandas, NumPy, PyArrow, SciPy, PyYAML)
+* Dependencies managed via `pyproject.toml` (Pandas, NumPy, PyArrow, SciPy, PyYAML)
 
 ### Installation
-Clone the repository and install with development dependencies (required for running tests and synthetic data generation).
+Clone the repository and install in editable mode. The build system will automatically resolve the best compatible versions for your OS (Linux/Windows/Mac).
 
 ```bash
 # Clone the repository
@@ -113,7 +113,7 @@ cd meridian
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install strictly pinned dependencies + dev tools
+# Install package + dev tools (Ruff, Mypy, Pytest)
 pip install -e ".[dev]"
 ```
 
@@ -172,12 +172,16 @@ This project enforces strict software engineering standards suitable for product
 * **Static Typing:** Fully typed codebase verified by `mypy --strict`. No `Any` types allowed in core logic.
 * **Linting & Formatting:** Enforced via `ruff` (replaces Flake8/Black/Isort) for consistent style.
 * **CI/CD Pipeline:** GitHub Actions automatically runs the test suite and type checkers on every push/PR.
-* **Pre-Commit Hooks:** Local guardrails prevent committing failing code or large data files.
-* **Dependency Locking:** Build environment is frozen using `pip-tools` and `requirements.lock` with hash verification, ensuring bit-perfect environment reproduction across machines and years.
+* **Cross-Platform Compatibility:** Dependency resolution is handled via a manifest-based system (`pyproject.toml`), ensuring seamless execution on both Windows dev machines and Linux CI runners.
+* **Determinism Gate:** Automated verification scripts ensure `Run A` and `Run B` produce identical binary artifacts, protecting against logic drift.
 
 To run the quality suite locally:
 ```bash
-pre-commit run --all-files
+# Format code
+ruff format .
+
+# Run static analysis
+mypy s3a_backtester
 ```
 
 ---
