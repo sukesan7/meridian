@@ -9,6 +9,7 @@ description = "Deterministic backtester for Strategy 3A (VWAP Trend Pullback)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "async-timeout>=4.0.3",
     "databento>=0.29,<1.0",
     "numpy>=1.26,<2.0",
     "pandas>=2.2,<3.0",
