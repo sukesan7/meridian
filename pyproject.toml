@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-core"
-version = "1.0.0"
+version = "1.0.2"
 description = "Deterministic backtester for Strategy 3A (VWAP Trend Pullback)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "databento>=0.29",
-    "numpy>=1.26",
-    "pandas>=2.2",
+    "databento>=0.29,<1.0",
+    "numpy>=1.26,<2.0",
+    "pandas>=2.2,<3.0",
     "pyarrow>=14.0",
-    "pyyaml>=6.0",
-    "scipy>=1.11"
+    "pyyaml>=6.0,<7.0",
+    "scipy>=1.11,<2.0"
 ]
 
 [project.urls]
@@ -37,8 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-meridian-run = "s3a_backtester.cli:main"
-threea-run = "s3a_backtester.cli:main"
+meridian = "s3a_backtester.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["s3a_backtester*"]
