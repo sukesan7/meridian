@@ -195,7 +195,7 @@ def rolling_walkforward_frames(
                 if ts_col:
                     t = pd.to_datetime(oos_trades[ts_col], errors="coerce")
                 else:
-                    t = pd.Series([pd.NaT] * len(oos_trades))
+                    t = pd.Series([pd.NaT] * len(oos_trades))  # type: ignore
 
                 r = pd.to_numeric(oos_trades["realized_R"], errors="coerce").fillna(0.0)
                 eq = r.cumsum()

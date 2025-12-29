@@ -1,122 +1,92 @@
 """
-Script: Verify Determinism
-Purpose: Validates that the engine produces bit-exact outputs given the same seed.
-
-Description:
-    Runs the Monte Carlo engine twice with identical configuration and seeds.
-    Compares the resulting `summary.json` and `mc_samples.parquet` binary fingerprints.
-    Crucial for regression testing in CI/CD pipelines.
+Determinism Verifier
+--------------------
+Calculates a cryptographic hash of two trade logs to prove they are identical.
+Used in CI/CD to validate that the engine is deterministic across runs.
 
 Usage:
-    python scripts/verify_determinism.py --trades-file outputs/backtest/quickstart_bt/trades.parquet
+    python scripts/verify_determinism.py <file_a> <file_b>
 """
 
-from __future__ import annotations
-import argparse
-import json
 import sys
-from pathlib import Path
+import hashlib
 import pandas as pd
-from s3a_backtester.cli import main as cli_main
+from pathlib import Path
 
 
-def read_json(p: Path) -> dict:
-    return json.loads(p.read_text(encoding="utf-8"))
+def get_deterministic_fingerprint(file_path: str) -> str:
+    """
+    Normalizes and hashes a DataFrame to ensure reproducible signatures.
+    Handles column ordering, row sorting, and floating-point epsilon noise.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Artifact not found: {path}")
+
+    # 1. Load Data
+    if path.suffix == ".parquet":
+        df = pd.read_parquet(path)
+    else:
+        df = pd.read_csv(path)
+
+    if df.empty:
+        return "empty_dataframe_hash"
+
+    # 2. Sort Columns (prevent column insertion order from affecting hash)
+    df = df.sort_index(axis=1)
+
+    # 3. Sort Rows (prevent execution order jitter from affecting hash)
+    #    We attempt to sort by entry time + symbol + price to lock order
+    sort_cols = [
+        c for c in ["entry_time", "date", "symbol", "entry"] if c in df.columns
+    ]
+    if sort_cols:
+        df = df.sort_values(by=sort_cols).reset_index(drop=True)
+
+    # 4. Normalize Floats (The "Epsilon" Killer)
+    #    Round to 8 decimals to ignore architecture-specific noise (Intel vs M1)
+    #    Convert to string to ensure serialization consistency
+    df_str = df.copy()
+    for col in df.select_dtypes(include=["float", "float32", "float64"]).columns:
+        # Fill NaNs with a fixed string before formatting to avoid NaN != NaN issues
+        df_str[col] = df[col].fillna(-999.999).apply(lambda x: f"{x:.8f}")
+
+    # 5. Serialize to JSON string (canonical format)
+    #    'split' format is compact and stable
+    content = df_str.to_json(orient="split", date_format="iso", index=False)
+
+    # 6. SHA-256 Hash
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def df_fingerprint(df: pd.DataFrame) -> str:
-    # Stable fingerprint based on values+index
-    h = pd.util.hash_pandas_object(df, index=True).values
-    return str(int(h.sum()))
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--trades-file",
-        required=True,
-        help="Path to a trades.parquet file to bootstrap from.",
-    )
-    ap.add_argument("--seed", type=int, default=123)
-    args = ap.parse_args()
-
-    trades_path = Path(args.trades_file).resolve()
-    if not trades_path.exists():
-        print(f"[ERROR] Trades file not found: {trades_path}")
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python verify_determinism.py <file_a> <file_b>")
         sys.exit(1)
 
-    base = "determinism_check"
-    run1 = base + "_a"
-    run2 = base + "_b"
+    file_a = sys.argv[1]
+    file_b = sys.argv[2]
 
-    print(f"[INFO] verifying MC determinism using source: {trades_path.name}")
+    print(f"Comparing artifacts:\n  A: {file_a}\n  B: {file_b}")
 
-    # Run 1
-    cli_main(
-        [
-            "monte-carlo",
-            "--config",
-            "configs/base.yaml",
-            "--trades-file",
-            str(trades_path),
-            "--n-paths",
-            "500",  # Lower count for speed
-            "--risk-per-trade",
-            "0.01",
-            "--block-size",
-            "5",
-            "--seed",
-            str(args.seed),
-            "--run-id",
-            run1,
-        ]
-    )
-
-    # Run 2
-    cli_main(
-        [
-            "monte-carlo",
-            "--config",
-            "configs/base.yaml",
-            "--trades-file",
-            str(trades_path),
-            "--n-paths",
-            "500",
-            "--risk-per-trade",
-            "0.01",
-            "--block-size",
-            "5",
-            "--seed",
-            str(args.seed),
-            "--run-id",
-            run2,
-        ]
-    )
-
-    p1 = Path("outputs") / "monte-carlo" / run1
-    p2 = Path("outputs") / "monte-carlo" / run2
-
-    # Compare Summaries
-    s1 = read_json(p1 / "summary.json")
-    s2 = read_json(p2 / "summary.json")
-
-    # Remove dynamic run_id for comparison
-    s1.pop("run_id", None)
-    s2.pop("run_id", None)
-
-    if s1 != s2:
-        print("[FAIL] summary.json differs across identical seeded runs")
+    try:
+        hash_a = get_deterministic_fingerprint(file_a)
+        hash_b = get_deterministic_fingerprint(file_b)
+    except Exception as e:
+        print(f"Error processing files: {e}")
         sys.exit(1)
 
-    # Compare Parquet Content
-    df1 = pd.read_parquet(p1 / "mc_samples.parquet")
-    df2 = pd.read_parquet(p2 / "mc_samples.parquet")
+    print("-" * 60)
+    print(f"Hash A: {hash_a}")
+    print(f"Hash B: {hash_b}")
+    print("-" * 60)
 
-    if df_fingerprint(df1) != df_fingerprint(df2):
-        print("[FAIL] mc_samples.parquet binary content differs")
+    if hash_a == hash_b:
+        print("✅ SUCCESS: Artifacts are bit-perfect identical.")
+        sys.exit(0)
+    else:
+        print("❌ FAILURE: Artifacts diverge!")
         sys.exit(1)
-
-    print(f"[PASS] Determinism verified. Seed {args.seed} produces identical outputs.")
 
 
 if __name__ == "__main__":

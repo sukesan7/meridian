@@ -98,6 +98,8 @@ def simulate_trades(
     tick_size = 0.25
     mgmt_cfg: MgmtCfg | None = None
     time_cfg: TimeStopCfg | None = None
+    fill_mode = "next_open"
+
     if cfg is not None:
         inst = getattr(cfg, "instrument", None)
         if inst is not None:
@@ -106,6 +108,7 @@ def simulate_trades(
         if hasattr(cfg, "slippage"):
             slip = getattr(cfg, "slippage")
             tick_size = getattr(slip, "tick_size", tick_size)
+            fill_mode = getattr(slip, "mode", "next_open")
 
         tick_size = getattr(cfg, "tick_size", tick_size)
 
@@ -118,6 +121,8 @@ def simulate_trades(
     records: list[dict[str, object]] = []
     session_cache: dict[date, pd.DataFrame] = {}
 
+    df_len = len(df)
+
     for ts, row in entries.iterrows():
         ts_idx = cast(pd.Timestamp, ts)
 
@@ -125,10 +130,29 @@ def simulate_trades(
         if dir_val == 0:
             continue
 
+        raw_price = float(row["close"])
+
+        if fill_mode == "next_open":
+            try:
+                curr_loc = df.index.get_loc(ts)
+                if isinstance(curr_loc, slice) or isinstance(curr_loc, np.ndarray):
+                    curr_loc = (
+                        curr_loc.stop - 1
+                        if isinstance(curr_loc, slice)
+                        else curr_loc[-1]
+                    )
+
+                next_loc = curr_loc + 1
+                if next_loc < df_len:
+                    raw_price = float(df["open"].iloc[next_loc])
+                else:
+                    raw_price = float(row["close"])
+            except KeyError:
+                raw_price = float(row["close"])
+
         side_lit: Literal["long", "short"] = "long" if dir_val > 0 else "short"
         side_sign = 1 if dir_val > 0 else -1
 
-        raw_price = float(row["close"])
         stop = float(row["stop_price"]) if pd.notna(row["stop_price"]) else np.nan
         if not np.isfinite(stop):
             continue

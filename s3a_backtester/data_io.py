@@ -9,8 +9,33 @@ from __future__ import annotations
 from typing import cast, Any
 from pandas.api.types import DatetimeTZDtype
 import pandas as pd
+import logging
 
 REQ_COLS = ("open", "high", "low", "close", "volume")
+
+logger = logging.getLogger(__name__)
+
+
+def validate_rth_completeness(df: pd.DataFrame) -> None:
+    """
+    Audits the DataFrame to ensure every trading session has exactly 390 minutes
+    (09:30 - 16:00 ET). Logs warnings for any incomplete days.
+    """
+    if df.empty:
+        return
+
+    idx = cast(pd.DatetimeIndex, df.index)
+    daily_counts = df.groupby(idx.date).size()
+
+    incomplete_days = daily_counts[daily_counts != 390]
+
+    if not incomplete_days.empty:
+        msg = f"Data Integrity Warning: Found {len(incomplete_days)} sessions with != 390 bars."
+        logger.warning(msg)
+        for date_val, count in incomplete_days.head(5).items():
+            logger.warning(f"  - {date_val}: {count} bars")
+        if len(incomplete_days) > 5:
+            logger.warning(f"  ... and {len(incomplete_days) - 5} more.")
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
@@ -77,8 +102,13 @@ def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
 
 
 def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
-    """Filters data for US Regular Trading Hours (09:30 - 16:00 ET)."""
-    return df.between_time("09:30", "16:00", inclusive="both")
+    """
+    Filters data for US Regular Trading Hours (09:30 - 16:00 ET).
+    Automatically validates data completeness post-slice.
+    """
+    df_rth = df.between_time("09:30", "16:00", inclusive="both")
+    validate_rth_completeness(df_rth)
+    return df_rth
 
 
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:

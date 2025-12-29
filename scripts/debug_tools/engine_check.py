@@ -49,7 +49,7 @@ def check_signals():
 
         valid_count = df[col].notna().sum()
         print(
-            f"Column '{col}': {valid_count} non-NaN rows ({valid_count/len(df):.1%} coverage)"
+            f"Column '{col}': {valid_count} non-NaN rows ({valid_count / len(df):.1%} coverage)"
         )
         if valid_count == 0:
             print(
