@@ -30,31 +30,24 @@ jobs:
                   python-version: ${{ matrix.python-version }}
                   cache: "pip"
 
-            - name: Install Dependencies (Strict)
+            - name: Install Dependencies
               run: |
-                  python -m pip install --upgrade pip pip-tools
-                  # 1. Enforce exact versions from lockfile
-                  pip-sync requirements.lock
-                  # 2. HOTFIX: Remove Windows-only lib that crashes Linux builds
-                  pip uninstall -y pip-system-certs || true
-                  # 3. Install the project itself in editable mode
-                  pip install --no-build-isolation -e .
+                  python -m pip install --upgrade pip
+                  # Install package + dev tools (ruff, mypy, pytest) from pyproject.toml
+                  # ".[dev]" means: install current dir (.) + the [dev] extras
+                  pip install --no-build-isolation ".[dev]"
 
             - name: Enforce Code Style (Ruff)
               run: |
-                  # Fails on lint errors or unformatted code
                   ruff check .
                   ruff format --check .
 
             - name: Static Type Check (Mypy)
               run: |
-                  # Strict typing check - crucial for Quant/C++ backgrounds
                   mypy s3a_backtester tests
 
             - name: Run Unit Tests
               run: |
-                  # -v: Verbose
-                  # --cov: Coverage report
                   pytest -v --cov=s3a_backtester --cov-report=term-missing tests/
 
     # --- JOB 2: The Determinism Gate ---
@@ -72,11 +65,9 @@ jobs:
 
             - name: Install Dependencies
               run: |
-                  python -m pip install --upgrade pip pip-tools
-                  pip-sync requirements.lock
-                  # HOTFIX: Remove Windows-only lib that crashes Linux builds
-                  pip uninstall -y pip-system-certs || true
-                  pip install --no-build-isolation -e .
+                  python -m pip install --upgrade pip
+                  # Install package + dev tools (needed for verification scripts)
+                  pip install --no-build-isolation ".[dev]"
 
             - name: Generate Synthetic Data
               run: |

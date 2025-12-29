@@ -17,7 +17,8 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
     "scipy>=1.11,<1.16",
     "contourpy>=1.2,<1.3",
-    "pexpect>=4.9.0"
+    "pexpect>=4.9.0",
+    "ipython>=8.18,<9.0"
 ]
 
 [project.urls]
@@ -40,7 +41,7 @@ dev = [
 ]
 
 [project.scripts]
-meridian = "s3a_backtester.cli:main"
+meridian-run = "s3a_backtester.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["s3a_backtester*"]
