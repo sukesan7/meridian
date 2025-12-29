@@ -109,6 +109,6 @@ jobs:
 
             - name: Verify Bit-Perfect Identity
               run: |
-                  python scripts/verify_determinism.py \
+                  python scripts/debug_tools/verify_determinism.py \
                     ci_artifacts/run_A/trades.parquet \
                     ci_artifacts/run_B/trades.parquet
