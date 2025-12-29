@@ -1,27 +1,25 @@
-name: CI
+name: Meridian CI
 
 on:
     push:
         branches: ["main"]
+        tags: ["v*"]
     pull_request:
         branches: ["main"]
-
-permissions:
-    contents: read
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: true
 
 jobs:
-    build-and-test:
-        name: Build & Test (Python ${{ matrix.python-version }})
+    # --- JOB 1: Code Quality & Unit Tests ---
+    quality-gate:
+        name: Quality & Tests (Python ${{ matrix.python-version }})
         runs-on: ubuntu-latest
-        timeout-minutes: 10
         strategy:
             fail-fast: false
             matrix:
-                python-version: ["3.11"]
+                python-version: ["3.10", "3.11"]
 
         steps:
             - uses: actions/checkout@v4
@@ -32,30 +30,90 @@ jobs:
                   python-version: ${{ matrix.python-version }}
                   cache: "pip"
 
-            - name: Install Dependencies
+            - name: Install Dependencies (Strict)
               run: |
-                  python -m pip install --upgrade pip setuptools wheel build
-                  # Install project in editable mode with dev deps
-                  pip install -e ".[dev]" --no-build-isolation
+                  python -m pip install --upgrade pip pip-tools
+                  # 1. Enforce exact versions from lockfile (removes anything else)
+                  pip-sync requirements.lock
+                  # 2. Install the project itself in editable mode
+                  pip install -e .
 
-            - name: Enforce Code Style (Pre-commit)
+            - name: Enforce Code Style (Ruff)
               run: |
-                  # Runs Black, Ruff, and other hooks defined in .pre-commit-config.yaml
-                  pre-commit run --all-files --show-diff-on-failure
+                  # Fails on lint errors or unformatted code
+                  ruff check .
+                  ruff format --check .
 
             - name: Static Type Check (Mypy)
               run: |
                   # Strict typing check - crucial for Quant/C++ backgrounds
                   mypy s3a_backtester tests
 
-            - name: Run Tests with Coverage
+            - name: Run Unit Tests
               run: |
-                  # -v for verbose logs (easier debugging)
-                  # --cov for coverage report
-                  # --cov-report=term-missing shows exactly which lines are untested
-                  pytest -v --cov=s3a_backtester --cov-report=term-missing
+                  # -v: Verbose
+                  # --cov: Coverage report
+                  pytest -v --cov=s3a_backtester --cov-report=term-missing tests/
 
-            - name: Verify Package Build
+    # --- JOB 2: The Determinism Gate ---
+    determinism-check:
+        name: Determinism Verification
+        runs-on: ubuntu-latest
+        needs: quality-gate
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Python 3.11
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install Dependencies
               run: |
-                  # Ensures the project can actually be built into a wheel (packaging check)
-                  python -m build
+                  python -m pip install --upgrade pip pip-tools
+                  pip-sync requirements.lock
+                  pip install -e .
+
+            - name: Generate Synthetic Data
+              run: |
+                  python -c "
+                  import pandas as pd
+                  import numpy as np
+                  dates = pd.date_range('2024-01-01', '2024-01-05', freq='1min', tz='America/New_York')
+                  np.random.seed(42)
+                  # Random walk price generation
+                  prices = 100 + np.random.randn(len(dates)).cumsum()
+                  df = pd.DataFrame({
+                      'open': prices,
+                      'high': prices + 1,
+                      'low': prices - 1,
+                      'close': prices,
+                      'volume': 1000
+                  }, index=dates)
+                  df.index.name = 'datetime'
+                  df.to_csv('ci_data.csv')
+                  "
+
+            - name: Run Backtest A (Reference)
+              run: |
+                  meridian-run backtest \
+                    --config configs/base.yaml \
+                    --data ci_data.csv \
+                    --out-dir ci_artifacts \
+                    --run-id run_A \
+                    --seed 12345
+
+            - name: Run Backtest B (Replication)
+              run: |
+                  meridian-run backtest \
+                    --config configs/base.yaml \
+                    --data ci_data.csv \
+                    --out-dir ci_artifacts \
+                    --run-id run_B \
+                    --seed 12345
+
+            - name: Verify Bit-Perfect Identity
+              run: |
+                  python scripts/verify_determinism.py \
+                    ci_artifacts/run_A/trades.parquet \
+                    ci_artifacts/run_B/trades.parquet
