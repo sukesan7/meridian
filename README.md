@@ -18,7 +18,7 @@ Meridian addresses the "Backtest-Reality Gap" prevalent in quantitative research
 
 ### Key Engineering Principles
 * **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This property is enforced via regression tests in the CI/CD pipeline.
-* **Causal Integrity (No Look-Ahead):** Signal generation logic enforces strict `n-bar` delays on pivoting indicators (e.g., Swing Highs). Future bars are inaccessible during the decision phase, eliminating the most common source of backtest overfitting.
+* **Causal Integrity & Latency Simulation:** The engine adheres to strict causality in both signal generation and execution. It enforces `n-bar` delays on indicators and simulates execution latency by filling orders at the Next Bar Open, eliminating the "optimistic fill" bias common in close-on-close backtesters.
 * **Session-Aware Execution:** Native handling of exchange timezones (`America/New_York`) and RTH (09:30–16:00 ET) boundaries prevents signal leakage across trading sessions.
 * **Regime-Adaptive Friction:** Slippage models are time-variant, applying higher friction during high-volatility windows (e.g., the "Hot Window" during the 09:30 Opening Range).
 
@@ -44,16 +44,16 @@ The engine implements a multi-stage finite state machine (FSM) to identify high-
 2.  **Zone Phase:** Once unlocked, the engine waits for a mean-reversion pullback into the value area (VWAP +- 1$\sigma$).
 3.  **Trigger Phase:** Trades are executed only upon confirmation of a micro-structure breakout (Confirmed Swing High/Low) within the value zone.
 
-### Logic Visualization (v1.0.1)
+### Logic Visualization (v1.0.2)
 *Trace of the State Machine during a typical session. Note the strict delay in Swing High (Red Triangle) confirmation, proving causal integrity.*
 
 ![Strategy Logic Trace](assets/v1_0_1_strategy_logic_trace.png)
 
 ---
 
-## 3. Performance (v1.0.1 Baseline)
+## 3. Performance (v1.0.2 Baseline)
 
-*Audited results derived from a 12-month In-Sample (IS) period on NQ (2024-2025). Metrics reflect the correction of look-ahead bias and the enabling of news-day trading.*
+*Audited results derived from a 12-month In-Sample (IS) period on NQ (2024-2025). Metrics reflect the correction of look-ahead bias and the enabling of news-day trading and causal execution protocols.*
 
 | Metric         | Value      | Description                                |
 | :------------- | :--------- | :----------------------------------------- |
@@ -138,7 +138,7 @@ Executes the strategy over a fixed period and generates `trades.parquet` and `si
 meridian-run backtest \
   --config configs/base.yaml \
   --data data/vendor_parquet/NQ/NQ_2024_RTH.parquet \
-  --run-id v1_0_1_baseline
+  --run-id v1_0_2_baseline
 ```
 
 ### B. Walk-Forward Analysis (Robustness)
@@ -149,7 +149,7 @@ meridian-run walkforward \
   --config configs/base.yaml \
   --data data/vendor_parquet/NQ/NQ_2024_RTH.parquet \
   --is-days 63 --oos-days 21 \
-  --run-id v1_0_1_wfo
+  --run-id v1_0_2_wfo
 ```
 
 ### C. Monte Carlo (Risk Assessment)
@@ -158,7 +158,7 @@ Applies block-bootstrap resampling to the trade distribution to estimate tail ri
 ```bash
 meridian-run monte-carlo \
   --config configs/base.yaml \
-  --trades outputs/backtest/v1_0_1_baseline/trades.parquet \
+  --trades outputs/backtest/v1_0_2_baseline/trades.parquet \
   --n-paths 2500 \
   --seed 7
 ```
@@ -173,6 +173,7 @@ This project enforces strict software engineering standards suitable for product
 * **Linting & Formatting:** Enforced via `ruff` (replaces Flake8/Black/Isort) for consistent style.
 * **CI/CD Pipeline:** GitHub Actions automatically runs the test suite and type checkers on every push/PR.
 * **Pre-Commit Hooks:** Local guardrails prevent committing failing code or large data files.
+* **Dependency Locking:** Build environment is frozen using `pip-tools` and `requirements.lock` with hash verification, ensuring bit-perfect environment reproduction across machines and years.
 
 To run the quality suite locally:
 ```bash
