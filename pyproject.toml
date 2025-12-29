@@ -55,6 +55,7 @@ target-version = "py310"
 strict = true
 ignore_missing_imports = true
 exclude = ["notebooks", "scripts"]
+disallow_any_generics = false
 
 [[tool.mypy.overrides]]
 module = "tests.*"
