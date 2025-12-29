@@ -14,7 +14,6 @@ class MockSubConfig:
 @dataclass
 class MockConfig:
     main_param: int = 1
-    # FIX: Use default_factory for mutable defaults
     nested: MockSubConfig = field(default_factory=MockSubConfig)
 
 
@@ -23,7 +22,7 @@ def test_validator_detects_unknown_keys_root():
     bad_data = {"main_param": 1, "fake_key": 999}
 
     with pytest.raises(
-        ValueError, match="Unknown keys detected at 'root': \['fake_key'\]"
+        ValueError, match=r"Unknown keys detected at 'root': \['fake_key'\]"
     ):
         validate_keys(bad_data, MockConfig)
 
@@ -34,7 +33,7 @@ def test_validator_detects_unknown_keys_nested():
 
     # Expect error path to point specifically to 'nested.fake_nested_key'
     with pytest.raises(
-        ValueError, match="Unknown keys detected at 'nested': \['fake_nested_key'\]"
+        ValueError, match=r"Unknown keys detected at 'nested': \['fake_nested_key'\]"
     ):
         validate_keys(bad_data, MockConfig)
 
