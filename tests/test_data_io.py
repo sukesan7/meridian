@@ -7,7 +7,14 @@ Coverage:
 - Loading & Normalization.
 """
 
-from s3a_backtester.data_io import load_minute_df, slice_rth, resample
+import pandas as pd
+import logging
+from s3a_backtester.data_io import (
+    load_minute_df,
+    slice_rth,
+    resample,
+    validate_rth_completeness,
+)
 
 
 def test_io_integration(tmp_path, sample_minute_df):
@@ -24,3 +31,18 @@ def test_io_integration(tmp_path, sample_minute_df):
 
     df5 = resample(rth, "5min")
     assert df5.index[0].minute % 5 == 0
+
+
+def test_rth_validation_logs_warning(caplog):
+    """Ensure the system screams if we feed it incomplete data."""
+    # Create a dummy dataframe with 10 rows (Standard day needs 390)
+    dates = pd.date_range("2024-01-01 09:30", periods=10, freq="1min")
+    df = pd.DataFrame({"close": 100}, index=dates)
+
+    # Capture logs
+    with caplog.at_level(logging.WARNING):
+        validate_rth_completeness(df)
+
+    # Assert we got the warning
+    assert "Data Integrity Warning" in caplog.text
+    assert "2024-01-01" in caplog.text

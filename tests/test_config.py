@@ -1,6 +1,6 @@
 import pytest
 from dataclasses import dataclass, field
-from s3a_backtester.config import Config, load_config, RiskCfg, EntryWindow
+from s3a_backtester.config import Config, load_config, RiskCfg, EntryWindow, SlippageCfg
 from s3a_backtester.validator import validate_keys
 
 # --- 1. Validator Tests (The "Typos" Check) ---
@@ -102,3 +102,14 @@ def test_load_config_fails_on_typo(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown keys detected at 'risk'"):
         load_config(str(config_file))
+
+
+def test_slippage_mode_validation():
+    """Ensure invalid slippage modes are rejected immediately."""
+    # These should pass
+    SlippageCfg(mode="close")
+    SlippageCfg(mode="next_open")
+
+    # This must fail
+    with pytest.raises(ValueError, match="Invalid slippage mode"):
+        SlippageCfg(mode="typo_mode")

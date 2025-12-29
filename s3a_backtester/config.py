@@ -35,11 +35,20 @@ class TimeStopCfg:
 class SlippageCfg:
     """Slippage simulation parameters."""
 
+    mode: str = "next_open"
     normal_ticks: int = 1
     hot_ticks: int = 2
     hot_start: str = "09:30"
     hot_end: str = "09:40"
     tick_size: float = 0.25
+
+    def __post_init__(self) -> None:
+        """Validate execution mode on initialization."""
+        valid_modes = {"close", "next_open"}
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"Invalid slippage mode: '{self.mode}'. Must be one of {valid_modes}"
+            )
 
 
 @dataclass
