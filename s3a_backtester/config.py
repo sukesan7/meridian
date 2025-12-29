@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
+from s3a_backtester.validator import validate_keys
 import yaml
 
 
@@ -108,6 +109,23 @@ class Config:
     trend: TrendCfg = field(default_factory=TrendCfg)
     management: MgmtCfg = field(default_factory=MgmtCfg)
 
+    def __post_init__(self) -> None:
+        """
+        Enforce strict logical invariants after loading.
+        This runs automatically after the dataclass is populated.
+        """
+        if self.risk.max_stop_or_mult > 1.25:
+            raise ValueError(
+                f"Risk Cap Violation: max_stop_or_mult ({self.risk.max_stop_or_mult}) "
+                f"exceeds the hard limit of 1.25."
+            )
+
+        if self.entry_window.start >= self.entry_window.end:
+            raise ValueError(
+                f"Configuration Error: Entry window start ({self.entry_window.start}) "
+                f"must be before end ({self.entry_window.end})."
+            )
+
 
 def _merge_dc(obj: Any, patch: dict[str, Any], *, path: str = "") -> Any:
     """Recursively merges a dictionary into a dataclass."""
@@ -127,9 +145,7 @@ def _merge_dc(obj: Any, patch: dict[str, Any], *, path: str = "") -> Any:
 
 def load_config(path: str | Path) -> Config:
     """
-    Loads configuration from a YAML file.
-    Strictly reads the file ONCE to avoid stream consumption issues.
-    Recursively updates the default config object to ensure type safety.
+    Loads configuration from a YAML file with STRICT validation.
     """
     p = Path(path)
     if not p.exists():
@@ -138,7 +154,11 @@ def load_config(path: str | Path) -> Config:
     with open(p, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
+    validate_keys(data, Config)
+
     cfg = Config()
     _merge_dc(cfg, data)
+
+    cfg.__post_init__()
 
     return cfg
