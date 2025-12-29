@@ -138,11 +138,11 @@ def test_next_open_execution_logic():
     assert len(trades_close) == 1
 
     # The 'next_open' trade should fill at Bar 1 Open (105.0)
-    assert (
-        trades_next.iloc[0]["entry"] == 105.0
-    ), "Failed: next_open mode did not look ahead!"
+    assert trades_next.iloc[0]["entry"] == 105.0, (
+        "Failed: next_open mode did not look ahead!"
+    )
 
     # The 'close' trade should fill at Bar 0 Close (100.0)
-    assert (
-        trades_close.iloc[0]["entry"] == 100.0
-    ), "Failed: close mode did not fill at signal bar!"
+    assert trades_close.iloc[0]["entry"] == 100.0, (
+        "Failed: close mode did not fill at signal bar!"
+    )
