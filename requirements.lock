@@ -695,7 +695,8 @@ pandas==2.3.3 \
     #   meridian-core (pyproject.toml)
 pip-system-certs==5.3 \
     --hash=sha256:19c8bf9957bcce7d69c4dbc2d0b2ef13de1984d53f50a59012e6dbbad0af67c6 \
-    --hash=sha256:3fbb5de62e374a99b688b1ad06e64ee5c4aeb633ef23e3a677d32e3e84fd863c
+    --hash=sha256:3fbb5de62e374a99b688b1ad06e64ee5c4aeb633ef23e3a677d32e3e84fd863c \
+    ; sys_platform == "win32"
     # via databento
 propcache==0.4.1 \
     --hash=sha256:0002004213ee1f36cfb3f9a42b5066100c44276b9b72b4e1504cddd3d692e86e \
