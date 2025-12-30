@@ -7,6 +7,7 @@ to ensure backtest provenance and reproducibility.
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -21,6 +22,27 @@ from s3a_backtester.repro import (
     try_git_sha,
     utc_now_iso,
 )
+
+
+def get_dependency_lock_hash() -> Optional[str]:
+    """
+    Attempts to locate and hash the 'requirements.lock' file.
+    Assumes the lockfile is in the project root.
+    """
+    try:
+        lock_path = Path("requirements.lock")
+        if lock_path.exists() and lock_path.is_file():
+            return sha256_file(lock_path)
+
+        lock_path_alt = (
+            Path(__file__).resolve().parent.parent.parent.parent / "requirements.lock"
+        )
+        if lock_path_alt.exists() and lock_path_alt.is_file():
+            return sha256_file(lock_path_alt)
+
+    except Exception:
+        pass
+    return None
 
 
 def build_run_meta(
@@ -48,6 +70,7 @@ def build_run_meta(
         "git_describe": try_git_describe(),
         "seed": seed,
         "env": env_info(),
+        "dependency_lock_sha256": get_dependency_lock_hash(),
     }
 
     if config_path:
@@ -65,9 +88,12 @@ def build_run_meta(
         try:
             stat = p.stat()
             meta["data_size_bytes"] = stat.st_size
-            meta["data_mtime_utc"] = utc_now_iso()
+            mtime_dt = datetime.datetime.fromtimestamp(
+                stat.st_mtime, tz=datetime.timezone.utc
+            )
+            meta["data_mtime_utc"] = mtime_dt.isoformat()
         except Exception:
-            pass
+            meta["data_mtime_utc"] = None
 
         if hash_data:
             meta["data_sha256"] = sha256_file(data_path)
