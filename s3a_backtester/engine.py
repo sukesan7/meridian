@@ -99,6 +99,7 @@ def simulate_trades(
     mgmt_cfg: MgmtCfg | None = None
     time_cfg: TimeStopCfg | None = None
     fill_mode = "next_open"
+    max_risk_mult = 1.25
 
     if cfg is not None:
         inst = getattr(cfg, "instrument", None)
@@ -114,6 +115,10 @@ def simulate_trades(
 
         mgmt_cfg = getattr(cfg, "management", None)
         time_cfg = getattr(cfg, "time_stop", None)
+
+        risk_cfg = getattr(cfg, "risk", None)
+        if risk_cfg is not None:
+            max_risk_mult = float(getattr(risk_cfg, "max_stop_or_mult", 1.25))
 
     tick_size = float(tick_size) if tick_size else 0.25
     use_management = mgmt_cfg is not None and time_cfg is not None
@@ -163,13 +168,18 @@ def simulate_trades(
         if risk_per_unit <= 0:
             continue
 
-        risk_R = 1.0
-
         or_high = float(row.get("or_high", np.nan))
         or_low = float(row.get("or_low", np.nan))
         or_height = (
             or_high - or_low if np.isfinite(or_high) and np.isfinite(or_low) else np.nan
         )
+
+        if np.isfinite(or_height) and or_height > 0:
+            risk_cap = or_height * max_risk_mult
+            if risk_per_unit > risk_cap:
+                continue
+
+        risk_R = 1.0
 
         sl_ticks = risk_per_unit / tick_size if tick_size > 0 else np.nan
 
