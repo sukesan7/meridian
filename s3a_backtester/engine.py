@@ -150,10 +150,15 @@ def simulate_trades(
                 next_loc = curr_loc + 1
                 if next_loc < df_len:
                     raw_price = float(df["open"].iloc[next_loc])
+                    fill_ts = df.index[next_loc]
                 else:
                     raw_price = float(row["close"])
+                    fill_ts = ts_idx
             except KeyError:
                 raw_price = float(row["close"])
+                fill_ts = ts_idx
+        else:
+            fill_ts = ts_idx
 
         side_lit: Literal["long", "short"] = "long" if dir_val > 0 else "short"
         side_sign = 1 if dir_val > 0 else -1
@@ -162,7 +167,7 @@ def simulate_trades(
         if not np.isfinite(stop):
             continue
 
-        entry_price = apply_slippage(side_lit, ts_idx, raw_price, cfg)
+        entry_price = apply_slippage(side_lit, fill_ts, raw_price, cfg)
 
         risk_per_unit = abs(entry_price - stop)
         if risk_per_unit <= 0:
