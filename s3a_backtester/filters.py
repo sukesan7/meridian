@@ -92,10 +92,11 @@ def build_session_filter_mask(
 
     low_atr_day = pd.Series(False, index=stats.index)
     if enable_low_atr:
+        prev_day_atr = stats["atr15"].shift(1)
         low_atr_day = (
-            stats["atr15"].notna()
+            prev_day_atr.notna()
             & stats["atr_pXX_60"].notna()
-            & (stats["atr15"] < stats["atr_pXX_60"])
+            & (prev_day_atr < stats["atr_pXX_60"])
         )
 
     news_day = daily_news if enable_news else pd.Series(False, index=stats.index)
@@ -106,4 +107,5 @@ def build_session_filter_mask(
     allowed = (~skip_session).reindex(session_idx).astype(bool)
     allowed.index = df.index
     allowed.name = "session_filter_ok"
+
     return allowed

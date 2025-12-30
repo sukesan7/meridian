@@ -17,7 +17,7 @@ The system is currently deployed to validate a singular strategy (**Strategy 3A*
 Meridian addresses the "Backtest-Reality Gap" prevalent in quantitative research by enforcing a strict **Data Contract** and **State Machine** execution model.
 
 ### Key Engineering Principles
-* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This is enforced via a **Bit-Perfect Determinism Gate** in CI, which compares trade logs byte-for-byte across separate runs.
+* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This is enforced via a **Regression Gate** in CI, which verifies strict output stability and reproducibility across simulation runs.
 * **Causal Integrity & Latency Simulation:** The engine adheres to strict causality in both signal generation and execution. It enforces `n-bar` delays on indicators and simulates execution latency by filling orders at the Next Bar Open, eliminating the "optimistic fill" bias common in close-on-close backtesters.
 * **Session-Aware Execution:** Native handling of exchange timezones (`America/New_York`) and RTH (09:30–16:00 ET) boundaries prevents signal leakage across trading sessions.
 * **Regime-Adaptive Friction:** Slippage models are time-variant, applying higher friction during high-volatility windows (e.g., the "Hot Window" during the 09:30 Opening Range).
@@ -44,14 +44,14 @@ The engine implements a multi-stage finite state machine (FSM) to identify high-
 2.  **Zone Phase:** Once unlocked, the engine waits for a mean-reversion pullback into the value area (VWAP +- 1$\sigma$).
 3.  **Trigger Phase:** Trades are executed only upon confirmation of a micro-structure breakout (Confirmed Swing High/Low) within the value zone.
 
-### Logic Visualization (v1.0.2)
+### Logic Visualization (v1.0.3)
 *Trace of the State Machine during a typical session. Note the strict delay in Swing High (Red Triangle) confirmation, proving causal integrity.*
 
 ![Strategy Logic Trace](assets/v1_0_1_strategy_logic_trace.png)
 
 ---
 
-## 3. Performance (v1.0.2 Baseline)
+## 3. Performance (v1.0.3 Baseline)
 
 *Audited results derived from a 12-month In-Sample (IS) period on NQ (2024-2025). Metrics reflect the correction of look-ahead bias and the enabling of news-day trading and causal execution protocols.*
 
@@ -169,10 +169,10 @@ meridian-run monte-carlo \
 
 This project enforces strict software engineering standards suitable for production environments.
 
-* **Static Typing:** Fully typed codebase verified by `mypy --strict`. No `Any` types allowed in core logic.
+* **Static Typing:** Fully typed codebase verified by `mypy` in CI. Enforces type safety to catch interface errors across the core engine and signal generation logic.
 * **Linting & Formatting:** Enforced via `ruff` (replaces Flake8/Black/Isort) for consistent style.
 * **CI/CD Pipeline:** GitHub Actions automatically runs the test suite and type checkers on every push/PR.
-* **Cross-Platform Compatibility:** Dependency resolution is handled via a manifest-based system (`pyproject.toml`), ensuring seamless execution on both Windows dev machines and Linux CI runners.
+* **Reproducible Environments:** Strict dependency versioning is enforced via `requirements.lock`, ensuring identical execution environments on both Windows dev machines and Linux CI runners.
 * **Determinism Gate:** Automated verification scripts ensure `Run A` and `Run B` produce identical binary artifacts, protecting against logic drift.
 
 To run the quality suite locally:
