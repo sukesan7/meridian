@@ -229,9 +229,10 @@ def simulate_trades(
         tp2_price = entry_price + side_sign * risk_per_unit * 2.0
         t_to_tp1_min = np.nan
         time_stop_reason = "none"
+        entry_time = fill_ts
+        trade_date = entry_time.date()
 
         if use_management and mgmt_cfg and time_cfg:
-            trade_date = ts_idx.date()
             if trade_date not in session_cache:
                 idx_all = cast(pd.DatetimeIndex, df.index)
                 mask_session = idx_all.date == trade_date
@@ -239,12 +240,14 @@ def simulate_trades(
 
             session_df = session_cache[trade_date]
             try:
-                entry_idx = session_df.index.get_loc(ts)
+                entry_idx = session_df.index.get_loc(entry_time)
             except KeyError:
                 entry_idx = 0
 
             if isinstance(entry_idx, slice) or isinstance(entry_idx, np.ndarray):
-                entry_idx = 0
+                entry_idx = (
+                    entry_idx.start if isinstance(entry_idx, slice) else entry_idx[0]
+                )
 
             pdh = float(row.get("pdh", np.nan))
             pdl = float(row.get("pdl", np.nan))
@@ -294,8 +297,9 @@ def simulate_trades(
 
         records.append(
             {
-                "date": ts_idx.date(),
-                "entry_time": ts,
+                "date": trade_date,
+                "signal_time": ts,
+                "entry_time": entry_time,
                 "exit_time": exit_time,
                 "side": side_lit,
                 "entry": float(entry_price),

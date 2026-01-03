@@ -8,6 +8,7 @@ Supports CSV/Parquet formats, timezone localization, and strict RTH slicing.
 from __future__ import annotations
 from typing import cast, Any
 from pandas.api.types import DatetimeTZDtype
+from datetime import time
 import pandas as pd
 import logging
 
@@ -30,12 +31,19 @@ def validate_rth_completeness(df: pd.DataFrame) -> None:
     incomplete_days = daily_counts[daily_counts != 390]
 
     if not incomplete_days.empty:
-        msg = f"Data Integrity Warning: Found {len(incomplete_days)} sessions with != 390 bars."
-        logger.warning(msg)
-        for date_val, count in incomplete_days.head(5).items():
-            logger.warning(f"  - {date_val}: {count} bars")
-        if len(incomplete_days) > 5:
-            logger.warning(f"  ... and {len(incomplete_days) - 5} more.")
+        details = []
+        for date_val, count in incomplete_days.head(3).items():
+            details.append(f"{date_val}: {count} bars")
+
+        remaining = len(incomplete_days) - 3
+        if remaining > 0:
+            details.append(f"... and {remaining} more.")
+
+        msg = (
+            f"Data Contract Violation: Found {len(incomplete_days)} sessions with != 390 bars. "
+            f"Examples: {', '.join(details)}"
+        )
+        raise ValueError(msg)
 
 
 def load_minute_df(path: str, tz: str = "America/New_York") -> pd.DataFrame:
@@ -107,8 +115,10 @@ def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
     Automatically validates data completeness post-slice.
     """
     df_rth = df.between_time("09:30", "16:00", inclusive="both")
+    idx = cast(pd.DatetimeIndex, df_rth.index)
+    df_rth = df_rth[idx.time != time(16, 0)]
     validate_rth_completeness(df_rth)
-    return df_rth
+    return cast(pd.DataFrame, df_rth)
 
 
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:

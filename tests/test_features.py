@@ -77,3 +77,39 @@ def test_find_swings_1m():
     assert not res["swing_high_confirmed"].iloc[3]
     assert res["swing_high_confirmed"].iloc[4]
     assert res["last_swing_high_price"].iloc[4] == 15.0
+
+
+def test_or_lookahead_prevention() -> None:
+    """
+    CRITICAL REGRESSION TEST (Phase 1.3):
+    Verifies that OR levels are NaN before the window closes.
+    """
+    # 1. Setup Data: 11 bars (09:30 to 09:40)
+    dates = pd.date_range("2023-01-01 09:30", periods=11, freq="1min")
+    df = pd.DataFrame(index=dates)
+
+    # Create a rising market so Highs are distinct
+    # 09:30=100, 09:31=101 ... 09:34=104. Max is 104.
+    df["high"] = np.arange(100, 111, 1)
+    df["low"] = 90.0
+    df["close"] = 100.0
+    df["volume"] = 1000
+
+    # 2. Run Calculation
+    # OR Window: 09:30 to 09:35 (exclusive).
+    # Bars included: 09:30, 31, 32, 33, 34.
+    # Logic: Data available at 09:35.
+    res = compute_session_refs(df)
+
+    # 3. Assertions
+
+    # Check Pre-Completion (09:30 -> 09:34) -> MUST BE NaN
+    assert pd.isna(res.loc[dates[0], "or_high"]), "Leak: OR High visible at 09:30"
+    assert pd.isna(res.loc[dates[4], "or_high"]), "Leak: OR High visible at 09:34"
+
+    # Check Completion (09:35) -> MUST BE VALID
+    expected_high = 104.0  # High at 09:34
+    assert res.loc[dates[5], "or_high"] == expected_high, "OR High missing at 09:35"
+
+    # Check Persistence (09:40) -> MUST BE VALID
+    assert res.loc[dates[10], "or_high"] == expected_high, "OR High lost at 09:40"
