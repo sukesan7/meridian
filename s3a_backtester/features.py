@@ -38,10 +38,13 @@ def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:
         or_low = or_slice["low"].min()
         or_height = or_high - or_low
 
-        mask = out.index.isin(day.index)
-        out.loc[mask, "or_high"] = or_high
-        out.loc[mask, "or_low"] = or_low
-        out.loc[mask, "or_height"] = or_height
+        day_idx = cast(pd.DatetimeIndex, day.index)
+        valid_indices = day_idx[day_idx.time >= or_end]
+
+        if not valid_indices.empty:
+            out.loc[valid_indices, "or_high"] = or_high
+            out.loc[valid_indices, "or_low"] = or_low
+            out.loc[valid_indices, "or_height"] = or_height
 
     return out
 
