@@ -186,3 +186,53 @@ def test_simulate_gap_risk_rejection() -> None:
     )
 
     print("\n[PASSED] Gap Risk Rejection: Engine correctly identified unsafe gap.")
+
+
+def test_next_open_causality_contract() -> None:
+    """
+    Regression Test:
+    Verifies that a signal at T results in an entry_time at T+1 (or fill time),
+    and that the trade record reflects this causality.
+    """
+    # 1. Setup Data: 09:30 signal, 09:31 fill
+    dates = pd.date_range("2025-01-01 09:30", periods=5, freq="1min")
+    df = pd.DataFrame(
+        {
+            "open": [100, 101, 102, 103, 104],
+            "high": [100, 101, 102, 103, 104],
+            "low": [100, 101, 102, 103, 104],
+            "close": [100, 101, 102, 103, 104],
+            "volume": 1000,
+        },
+        index=dates,
+    )
+
+    # 2. Force a Signal at 09:30 (Index 0)
+    signals = df.copy()
+    signals["direction"] = 0
+    signals.loc[dates[0], "direction"] = 1
+
+    # Enable all filters
+    signals["trigger_ok"] = True
+    signals["riskcap_ok"] = True
+    signals["time_window_ok"] = True
+    signals["disqualified_2sigma"] = False
+    signals["stop_price"] = 90.0
+
+    # 3. Configure for Next Open
+    cfg = Config(slippage=SlippageCfg(mode="next_open", tick_size=0.0))
+
+    # 4. Run
+    trades = simulate_trades(df, signals, cfg)
+
+    # 5. Assertions
+    assert len(trades) == 1
+    t = trades.iloc[0]
+
+    # Signal was at 09:30
+    # Entry MUST be 09:31
+    assert t["entry_time"] == dates[1], f"Entry Time {t['entry_time']} != 09:31"
+    assert t["entry"] == 101.0
+
+    # Date must match the entry
+    assert t["date"] == dates[1].date()
