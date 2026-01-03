@@ -74,7 +74,7 @@ The simulation below demonstrates the engine's ability to capture regime-depende
 To ensure simulation fidelity, the input data (Nasdaq-100 1-Minute Bars) undergoes rigorous integrity checks prior to backtesting.
 
 ### A. Session Density
-*Validation of bar counts per RTH session. The target is 390 bars (09:30–16:00 ET). Consistent density confirms no missing data gaps during trading hours.*
+*Validation of bar counts per RTH session. The target is 390 bars (09:30–15:59 ET). Consistent density confirms no missing data gaps during trading hours.*
 
 ![Session Density](assets/nq_session_density.png)
 
@@ -187,7 +187,7 @@ This project enforces strict software engineering standards suitable for product
 * **Linting & Formatting:** Enforced via `ruff` (replaces Flake8/Black/Isort) for consistent style.
 * **CI/CD Pipeline:** GitHub Actions automatically runs the test suite and type checkers on every push/PR.
 * **Reproducible Environments:** Strict dependency versioning is enforced via `requirements.lock`, ensuring identical execution environments on both Windows dev machines and Linux CI runners.
-* **Determinism Gate:** Automated verification scripts ensure `Run A` and `Run B` produce identical binary artifacts, protecting against logic drift.
+* **Determinism Gate:** Automated verification scripts ensure `Run A` and `Run B` produce semantically identical outputs, protecting against logic drift.
 
 To run the quality suite locally:
 ```bash
