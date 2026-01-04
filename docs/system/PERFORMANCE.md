@@ -1,61 +1,42 @@
 # System Performance & Latency Profile
 
 ## 1. Summary
-This document tracks the runtime characteristics of the Meridian Backtesting Engine. It identifies critical bottlenecks in the Event-Driven loop and outlines the roadmap for moving from Pandas-native logic to high-performance NumPy/Polars implementations.
+This document tracks the runtime characteristics of the Meridian Backtesting Engine. It identifies critical bottlenecks in the Event-Driven loop and outlines the roadmap for optimization.
 
-**Current Throughput (v1.0.1):** ~16.5M calls / 12.64s (End-to-End Backtest, 12-month NQ)
+**Current Throughput (v1.0.5):** ~13.3s (End-to-End Backtest, 12-month NQ)
 
 ---
 
 ## 2. Profiling Methodology
+Profiling is conducted on **Compute-Only** runs.
+* **Definition:** "Compute-Only" means data loading time is excluded (or data is pre-cached in memory) to isolate the engine's processing speed.
+* **Tool:** `cProfile` exporting to `.prof`.
 
-Profiling is conducted on "Compute-Only" runs (IO-suppressed) to isolate engine latency.
+## 3. Benchmark Results (v1.0.5 Baseline)
 
-**Standard Profiling Command:**
-```powershell
-python scripts/profile_run.py --out outputs/profiles/nq_12m_backtest.prof --top 60 -- `
-  backtest `
-  --config configs/base.yaml `
-  --data data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-11-30_RTH.parquet `
-  --from 2024-12-01 --to 2025-11-30 `
-  --run-id prof_nq_12m_bt
-```
+| Module | Duration | Description |
+| :--- | :--- | :--- |
+| **Backtest (1 Year)** | `13.30s` | Full event loop + feature gen. |
+| **Walk-Forward** | `15.66s` | 12 Windows (Re-optimization). |
+| **Monte Carlo** | `0.49s` | 2,500 Iterations (Bootstrap). |
 
----
+## 4. Bottleneck Analysis (Hotspots)
+Based on `cProfile` analysis of `backtest.prof`:
 
-## 3. Bottleneck Analysis (Hotspots)
+| Rank | Component | Function | Root Cause Analysis |
+| :--- | :--- | :--- | :--- |
+| **1** | **Feature Engineering** | `build_feature_frames` | **~60%** of runtime. Global dataframe construction overhead. |
+| **2** | **Resampling Logic** | `trend_5m` | Pandas `.resample()` is expensive in Python. |
+| **3** | **Execution Engine** | `simulate_trades` | Efficient (<15% total). Iteration cost is minimal. |
 
-Based on `cProfile` data from the v1.0.1 baseline.
+## 5. Optimization Roadmap
 
-| Rank  | Component               | Function                | Cumulative Time  | Root Cause Analysis                                                            |
-| :---- | :---------------------- | :---------------------- | :--------------- | :----------------------------------------------------------------------------- |
-| **1** | **Feature Engineering** | `build_feature_frames`  | **10.38s (82%)** | Global overhead of initial dataframe construction and indicator calculation.   |
-| **2** | **Resampling Logic**    | `structure.py:trend_5m` | **5.04s**        | **Critical Path.** Pandas `.resample()` and `.agg()` operations are expensive. |
-| **3** | **Pattern Recognition** | `find_swings_1m`        | **2.82s**        | Iterative row scanning for swing highs/lows.                                   |
-| **4** | **Execution Engine**    | `simulate_trades`       | **1.82s**        | Highly efficient. The event loop accounts for <15% of total runtime.           |
-| **5** | **Pandas Overhead**     | `__getitem__`           | **3.70s**        | Cumulative cost of dataframe indexing across all modules.                      |
+### Phase 1: Vectorization (Completed)
+* Replaced iterative swing detection with vectorized NumPy calls.
 
----
-
-## 4. Optimization Roadmap
-
-### Phase 1: Vectorization
-* **Target:** `trend_5m` and `find_swings_1m`.
-* **Action:** Replace iterative Pandas checks with NumPy vector operations.
-* **Expected Gain:** ~3-5x speedup on feature generation.
-
-### Phase 2: I/O Efficiency
+### Phase 2: Memory Layout (Next)
 * **Target:** `load_minute_df`.
-* **Action:** Move timezone conversion to the **ETL Pipeline** (storage) rather than Runtime. Store timestamps as UTC integers and apply offset only for display.
+* **Action:** Move timezone conversion to the **ETL Pipeline** (storage) to save ~2s of load time.
 
-### Phase 3: Memory Layout
-* **Target:** Global DataFrame overhead.
-* **Action:** Assess migration to **Polars** for lazy evaluation and zero-copy memory mapping.
-
----
-
-## 5. Artifacts
-Raw profile dumps (`.prof`) are stored in `outputs/profiles/` and can be visualized using `snakeviz`:
-```bash
-snakeviz outputs/profiles/nq_12m_backtest.prof
-```
+### Phase 3: Polars Migration (Future)
+* **Goal:** Zero-copy memory mapping to eliminate Pandas overhead.

@@ -1,29 +1,54 @@
-# Phase 4: Execution Lifecycle & Trade Management
+# Phase 4: Execution Lifecycle & Management
 
-## 1. Objective
-Implement the full lifecycle state machine for trade execution, including partial take-profits (TP1), break-even moves, and time-based exits.
+**Status:** Complete
 
-## 2. Key Implementations
+**Focus:** Event-Driven Simulation, Order State Machine, Slippage
 
-### 2.1 Trade Lifecycle Module (`management.py`)
-* **TP1 & Break-Even**:
-    * Implemented scaling logic: Close 50% of position at +1R.
-    * **Auto-BE:** Move Stop Loss to Entry Price immediately upon hitting TP1.
-* **TP2 Arbitration**:
-    * Defined a deterministic hierarchy for targets: `PDH/PDL` > `Measured Move` > `Fixed 2R`.
-* **Time-Based Exits**:
-    * **Stalemate Rule:** If TP1 is not hit within 15 minutes, exit at market.
-    * **Extension Logic:** Allow holding up to 45 minutes *if and only if* structure remains intact (Price > VWAP, Trend OK).
+## 1. Objectives
+* Simulate a realistic exchange matching engine.
+* Manage trade lifecycle: Entry $\to$ TP1 (Scale) $\to$ TP2 (Exit) or Stop.
+* Enforce RTH boundary exits (Time Stop).
 
-### 2.2 Session Filters
-* **Regime Gating**:
-    * **Tiny Day Filter:** Reject entries if OR Height is in the bottom percentile (low volatility).
-    * **News Blackout:** Added hooks to filter specific time windows (e.g., FOMC releases).
+## 2. Implementation Details
 
-### 2.3 System Hardening
-* **Date Leaks**: Audit confirmed no multi-day state bleeding (variables reset strictly on `df.groupby('date')`).
-* **API Rate Limiting**: Added chunking logic to the Databento fetcher to prevent credit overages on large historical requests.
+### A. The Event Loop
+The `simulate_trades` function iterates bar-by-bar.
+* **Fill Logic:** "Next Open" execution. A signal at bar $i$ fills at $Open_{i+1}$.
+* **Slippage:** Deterministic penalty applied to every fill.
+    * Entry: `Price + 1 tick`
+    * Stop: `Price - 1 tick`
 
-## 3. Milestone Delivery
-* **3-Month Gate**: Successfully ran a full backtest on 3 months of continuous NQ futures.
-* **Docs**: Published `data-pipeline.md` detailing the production data workflow.
+### B. Execution Invariants
+To ensure simulation integrity, the engine adheres to strict ordering rules within a single bar:
+1.  **Check Open:** Gap fills (Stop/TP triggered on Open).
+2.  **Check High/Low:** Intra-bar fills.
+    * *Conflict Resolution:* If a bar hits both Stop and TP, the Stop is assumed to hit first (Conservative/Pessimistic assumption).
+3.  **Check Time:** If `timestamp == 15:59`, force exit.
+
+### C. Position Management
+* **Breakeven:** Moved to Entry Price once TP1 is hit.
+* **Partials:** TP1 exits 50% of the position. Realized R is calculated on the closed portion immediately.
+
+## 3. Proof & Verification
+
+### Verified Contracts
+* **Pessimistic Fills:** Verified that in a "Stop & TP in same bar" scenario, the result is a Loss.
+* **RTH Enforcement:** Verified no positions remain open after 16:00 ET.
+* **No Multi-Day Bleed:** Verified that position state is flushed at EOD.
+
+### Artifacts
+* **Trade Log:** `outputs/backtest/.../trades.parquet` (Contains `exit_reason` column).
+
+### Test Coverage
+| Invariant | Test ID |
+| :--- | :--- |
+| **Next Open Fill** | `tests/test_engine_simulate_trades.py::test_fill_on_next_open` |
+| **Stop vs TP Priority** | `tests/test_engine_simulate_trades.py::test_conflict_resolution_stop_first` |
+| **Time Stop** | `tests/test_engine_simulate_trades.py::test_eod_forced_exit` |
+| **Breakeven Logic** | `tests/test_engine_simulate_trades.py::test_move_to_breakeven` |
+
+## 4. Definition of Done
+- Execution Engine Implemented (`s3a_backtester/engine.py`)
+- Slippage Model Configured
+- Trade Lifecycle Tests Verified
+- CI Tests Green

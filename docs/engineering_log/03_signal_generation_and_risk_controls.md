@@ -1,33 +1,47 @@
 # Phase 3: Signal Generation & Risk Controls
 
-## 1. Objective
-Wire the structural components into a cohesive `SignalGenerator` and implement entry-level risk controls (Risk Caps) to reject invalid setups before execution.
+**Status:** Complete
 
-## 2. Key Implementations
+**Focus:** Strategy Logic, State Gating, Risk Invariants
 
-### 2.1 Trigger Logic (`trigger_ok`)
-* **Micro-Structure Triggers**:
-    * Implemented `micro_swing_break`: Detects price breaking the most recent 1-minute swing high/low.
-    * **Causality Check:** Verified that logic does not "peek" at swings formed in the future.
-* **Zone Proximity Filters**:
-    * Added "No Chase" logic: Triggers are valid only if price is within 1 tick of the VWAP band.
+## 1. Objectives
+* Implement Strategy 3A logic (Unlock $\to$ Zone $\to$ Trigger) as defined in [`docs/system/STRATEGY_SPEC.md`](../system/STRATEGY_SPEC.md).
+* Enforce hard Risk Caps (Max R per trade).
+* Implement "Disqualification" logic (2-Sigma Band touches).
 
-### 2.2 Risk Management (Pre-Trade)
-* **Risk Cap Enforcement**:
-    * Defined `Max SL Distance` as a function of OR Height (e.g., `1.25 * OR_Height`).
-    * **Rejection Logic:** If `(Entry - Stop) > Max_Risk`, the signal is invalidated immediately.
-* **Stop Placement**:
-    * Dynamic Stop Loss placement based on the most recent invalidation swing.
+## 2. Implementation Details
 
-### 2.3 Entry Simulation
-* **Slippage Model (`slippage.py`)**:
-    * Implemented regime-based slippage (Normal vs. High Volatility).
-    * Default assumption: 1 tick adverse slippage on entry.
-* **Trade Logging**:
-    * Structured the `simulate_trades` output schema (`entry_price`, `stop_price`, `risk_R`, `or_height`).
+### A. The Signal Pipeline
+Signals are generated via a vectorized pass over the feature frame.
+1.  **Unlock:** Check if `Close > OR_High` (Long) or `Close < OR_Low` (Short).
+2.  **Zone:** Check for pullbacks into `[VWAP, Band]`.
+3.  **Trigger:** Check for Micro-Structure Break (BOS).
 
-## 3. Testing & Verification
-* **Scenario Testing**: Created "Golden Day" synthetic data to verify that:
-    1.  Valid signals trigger exactly one trade.
-    2.  Signals with stops exceeding the Risk Cap are silently rejected (0 trades).
-* **Smoke Test**: Validated end-to-end flow on QQQ development data.
+### B. Risk Invariants
+To prevent execution errors, the signal generator enforces strict data validation *before* passing orders to the engine.
+* **Tick Rounding:** All `stop_price` and `entry_price` values are rounded to the nearest instrument tick (0.25 for NQ).
+* **Minimum Risk:** If `|Entry - Stop| < 4 ticks`, the trade is rejected (Noise).
+* **Maximum Risk:** If `|Entry - Stop| > 1.25 * OR_Height`, the trade is rejected (Volatility Cap).
+
+### C. State Gating
+* **2-Sigma Rule:** If price touches the *opposing* 2-sigma band, the session is flagged `disqualified_2sigma = True`. No further signals are generated for that session.
+
+## 3. Proof & Verification
+
+### Verified Contracts
+* **Gating:** Verified that no signals exist after a 2-sigma violation.
+* **Risk Cap:** Verified that no trades exceed the defined R-risk max width.
+
+### Test Coverage
+| Invariant | Test ID |
+| :--- | :--- |
+| **Signal Logic** | `tests/test_engine_generate_signals.py::test_long_entry_logic` |
+| **Risk Cap** | `tests/test_engine_generate_signals.py::test_risk_cap_rejection` |
+| **Disqualification** | `tests/test_engine_generate_signals.py::test_2sigma_disqualification` |
+| **Tick Rounding** | `tests/test_engine_generate_signals.py::test_price_rounding` |
+
+## 4. Definition of Done
+- Strategy Logic Implemented (`s3a_backtester/logic.py`)
+- Risk Invariants Defined and Enforced
+- Configuration Schema Validated
+- CI Tests Green
