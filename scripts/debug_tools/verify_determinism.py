@@ -82,10 +82,12 @@ def main():
     print("-" * 60)
 
     if hash_a == hash_b:
-        print("✅ SUCCESS: Artifacts are bit-perfect identical.")
+        print(
+            "SUCCESS: Artifacts are semantically deterministic (values match within tolerance)."
+        )
         sys.exit(0)
     else:
-        print("❌ FAILURE: Artifacts diverge!")
+        print("FAILURE: Artifacts diverge!")
         sys.exit(1)
 
 
