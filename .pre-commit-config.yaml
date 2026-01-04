@@ -2,7 +2,7 @@
 # Optimized for Speed, Safety, and Strict Typing
 
 repos:
-    # 1. Fast Linting & Formatting (Replaces Black & Flake8)
+    # 1. Fast Linting & Formatting
     - repo: https://github.com/astral-sh/ruff-pre-commit
       rev: v0.6.9
       hooks:
