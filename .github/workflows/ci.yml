@@ -34,7 +34,7 @@ jobs:
 
       - name: Install Dependencies (Locked)
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements.lock
           python -m pip install -e . --no-deps
 
