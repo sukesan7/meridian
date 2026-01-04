@@ -1,6 +1,6 @@
 # Meridian runtime deps ONLY.
 # Keep this tight; no notebooks.
-numpy
+numpy<2.3
 pandas
 pyarrow
 PyYAML
