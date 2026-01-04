@@ -19,6 +19,7 @@ import numpy as np
 
 _TRADE_COLS = [
     "date",
+    "signal_time",
     "entry_time",
     "exit_time",
     "side",
@@ -55,7 +56,6 @@ def simulate_trades(
     defaults: dict[str, object] = {
         "direction": 0,
         "trigger_ok": False,
-        "riskcap_ok": True,
         "time_window_ok": True,
         "disqualified_2sigma": False,
         "stop_price": np.nan,
@@ -81,7 +81,6 @@ def simulate_trades(
     mask = (
         direction.ne(0)
         & df["trigger_ok"].astype(bool)
-        & df["riskcap_ok"].astype(bool)
         & df["time_window_ok"].astype(bool)
         & ~df["disqualified_2sigma"].astype(bool)
     )
@@ -351,7 +350,6 @@ def generate_signals(
         "trigger_ok": False,
         "disqualified_±2σ": False,
         "disqualified_2sigma": False,
-        "riskcap_ok": True,
         "direction": 0,
         "stop_price": np.nan,
     }
@@ -553,21 +551,6 @@ def generate_signals(
 
         stop_price = stop_price.where(stop_price.notna(), cand_stop)
 
-    entry_px = out["close"].astype(float)
-    or_h = out["or_height"].astype(float).abs()
-    cap = max_mult * or_h
-
-    risk_dist = pd.Series(np.nan, index=out.index, dtype=float)
-    longs = direction > 0
-    shorts = direction < 0
-    risk_dist.loc[longs] = entry_px.loc[longs] - stop_price.loc[longs]
-    risk_dist.loc[shorts] = stop_price.loc[shorts] - entry_px.loc[shorts]
-
-    cap_ok = stop_price.notna() & (risk_dist > 0) & (risk_dist <= cap)
-
-    riskcap_ok = stop_price.isna() | cap_ok
-
     out["stop_price"] = stop_price
-    out["riskcap_ok"] = riskcap_ok.astype(bool)
 
     return out
