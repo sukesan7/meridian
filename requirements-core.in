@@ -1,5 +1,4 @@
 # Meridian runtime deps ONLY.
-# Keep this tight; no notebooks.
 numpy<2.3
 pandas
 pyarrow

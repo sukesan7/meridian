@@ -7,4 +7,3 @@ pytest-cov
 mypy
 ruff
 types-PyYAML
-types-requests
