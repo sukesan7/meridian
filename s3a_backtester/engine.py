@@ -214,12 +214,12 @@ def simulate_trades(
             if dir_val > 0:
                 if np.isfinite(v1u) and vwap <= price <= v1u:
                     location = (
-                        "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1σ"
+                        "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1sigma"
                     )
             else:
                 if np.isfinite(v1d) and v1d <= price <= vwap:
                     location = (
-                        "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1σ"
+                        "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1sigma"
                     )
 
         exit_time = pd.NaT
@@ -348,7 +348,6 @@ def generate_signals(
         "or_break_unlock": False,
         "in_zone": False,
         "trigger_ok": False,
-        "disqualified_±2σ": False,
         "disqualified_2sigma": False,
         "direction": 0,
         "stop_price": np.nan,
@@ -449,7 +448,6 @@ def generate_signals(
 
     disq = hit_for_disq.groupby(dates).cummax().astype(bool)
     out["disqualified_2sigma"] = disq
-    out["disqualified_±2σ"] = disq
 
     direction = out["direction"].astype("int8")
     unlock_event = out["or_break_unlock"].astype(bool)
