@@ -1,0 +1,7 @@
+# Meridian runtime deps ONLY.
+# Keep this tight; no notebooks.
+numpy
+pandas
+pyarrow
+PyYAML
+scipy

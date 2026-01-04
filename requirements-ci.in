@@ -1,0 +1,10 @@
+# CI/runtime/test deps only (portable)
+-r requirements-core.in
+
+# Tooling used in CI
+pytest
+pytest-cov
+mypy
+ruff
+types-PyYAML
+types-requests
