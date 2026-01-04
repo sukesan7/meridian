@@ -136,13 +136,13 @@ def test_next_open_execution_logic() -> None:
     assert len(trades_next) == 1
     assert len(trades_close) == 1
 
-    assert (
-        trades_next.iloc[0]["entry"] == 105.0
-    ), "Failed: next_open mode did not look ahead!"
+    assert trades_next.iloc[0]["entry"] == 105.0, (
+        "Failed: next_open mode did not look ahead!"
+    )
 
-    assert (
-        trades_close.iloc[0]["entry"] == 100.0
-    ), "Failed: close mode did not fill at signal bar!"
+    assert trades_close.iloc[0]["entry"] == 100.0, (
+        "Failed: close mode did not fill at signal bar!"
+    )
 
 
 def test_simulate_gap_risk_rejection() -> None:

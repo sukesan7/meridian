@@ -185,6 +185,6 @@ def test_signals_do_not_prefilter_risk():
 
     # 4. Assert
     # It should STILL be OK because we deleted the risk check from this function
-    assert signals.iloc[0][
-        "trigger_ok"
-    ], "generate_signals should not filter based on risk; that is the engine's job."
+    assert signals.iloc[0]["trigger_ok"], (
+        "generate_signals should not filter based on risk; that is the engine's job."
+    )
