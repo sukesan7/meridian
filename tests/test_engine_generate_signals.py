@@ -145,3 +145,46 @@ def test_config_disqualify_after_unlock_true():
     out = generate_signals(df, cfg=DisqCfg)
     assert not out["disqualified_2sigma"].iloc[0]
     assert out["in_zone"].iloc[6]
+
+
+def test_signals_do_not_prefilter_risk():
+    """
+    Verifies that generate_signals returns 'trigger_ok' even if the stop width
+    looks huge relative to 'close'. The execution layer handles the rejection.
+    """
+    # 1. Setup Data: A valid setup pattern
+    dates = pd.date_range("2024-01-01 09:30", periods=5, freq="1min")
+    df = pd.DataFrame(
+        {
+            "close": [100.0] * 5,
+            "high": [105.0] * 5,
+            "low": [95.0] * 5,
+            "open": [100.0] * 5,
+            "or_high": [101.0] * 5,  # OR Height = 2.0
+            "or_low": [99.0] * 5,
+            "vwap": [100.0] * 5,
+            "vwap_1u": [102.0] * 5,
+            "vwap_1d": [98.0] * 5,
+            "trend_5m": [1] * 5,  # Long Trend
+        },
+        index=dates,
+    )
+
+    # 2. Force a valid pattern logic manually to isolate risk check
+    # We fake the internal columns that usually trigger a signal
+    df["direction"] = 1
+    df["in_zone"] = True
+    df["trigger_ok"] = True  # The pattern is valid
+    df["time_window_ok"] = True
+    df["stop_price"] = 90.0  # Wide stop (Risk=10).
+    # If OR=2.0 and max_mult=1.5, MaxRisk=3.0.
+    # This WOULD be rejected if risk logic existed here.
+
+    # 3. Run Signal Gen
+    signals = generate_signals(df)
+
+    # 4. Assert
+    # It should STILL be OK because we deleted the risk check from this function
+    assert signals.iloc[0][
+        "trigger_ok"
+    ], "generate_signals should not filter based on risk; that is the engine's job."
