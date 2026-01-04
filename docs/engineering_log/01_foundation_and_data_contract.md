@@ -1,28 +1,53 @@
-# Phase 1: Data Foundation & Deterministic Scaffolding
+# Phase 1: Foundation & Data Contract
 
-## 1. Objective
-Establish the core data ingestion layer and ensure deterministic handling of time-series data across Daylight Savings Time (DST) transitions. This phase lays the invariant ground rules for the backtesting engine.
+**Status:** Complete
 
-## 2. Key Implementations
+**Focus:** Data Ingestion, Schema Enforcement, Timezone Determinism
 
-### 2.1 Data I/O Layer (`s3a_backtester.data`)
-* **Strict Loader (`load_minute_df`)**: Implemented a parser that enforces a specific schema (`open`, `high`, `low`, `close`, `volume`) and rejects non-compliant inputs.
-* **RTH Slicing (`slice_rth`)**:
-    * Defined Regular Trading Hours as `09:30 – 16:00` ET.
-    * **Constraint:** Logic is timezone-aware (`America/New_York`) to handle the UTC offset shift (-4/-5) correctly.
-* **Resampling Engine**:
-    * Standardized 5-minute and 30-minute aggregation.
-    * **Invariant:** Enforced `label="right", closed="right"` to strictly prevent look-ahead bias in higher-timeframe features.
+## 1. Objectives
+* Establish a rigid Data Contract to prevent "Garbage In, Garbage Out."
+* Implement `America/New_York` timezone handling that survives DST transitions.
+* Enforce a dense 1-minute grid (390 bars/session) to guarantee array alignment.
 
-### 2.2 Feature Engineering (Vectorized)
-* **Session References**: Computed Opening Range (OR) metrics (`or_high`, `or_low`) and Previous Day bounds (PDH/PDL).
-* **VWAP Bands**: Implemented session-anchored VWAP with standard deviation bands (±1σ, ±2σ) for mean-reversion logic.
-* **ATR15**: Added 15-minute Average True Range (calculated on 1-minute source) as a volatility normalization factor.
+## 2. Implementation Details
 
-## 3. DevOps & Quality Assurance
-* **CI/CD Pipeline**: Configured GitHub Actions to run `pytest` and `ruff` (linter) on every push/PR.
-* **Branch Strategy**: Enforced a Protected `main` branch policy; all changes require PR validation.
-* **Regression Testing**: Created synthetic datasets to prove RTH slicing remains consistent across March/November DST boundaries.
+### A. The Data Contract
+We defined a strict schema in [`docs/data/data-specification.md`](../data/data-specification.md).
+* **Format:** Parquet (Snappy compression).
+* **Primary Key:** `datetime64[ns, America/New_York]`.
+* **Invariant:** Timestamps must be monotonic increasing and unique.
 
-## 4. Artifacts
-* **Data Contract**: `docs/data/DATA_SPECIFICATION.md` defining the input schema.
+### B. Session Handling
+To prevent look-ahead bias during resampling, we enforce **Right-Edge Labeling** (Model A).
+* **RTH:** 09:30:00 to 16:00:00 ET.
+* **Filtering:** The `16:00:00` closing print is excluded from the RTH dataset to prevent resampling logic from "seeing" the close before the bar is complete.
+* **Gap Filling:** Zero-Order Hold (ZOH) for price; `0` for volume.
+
+### C. The "Cross-Session" Invariant
+A critical bug risk in continuous contracts is bleeding data across days.
+* **Rule:** Forward-fill operations **must never** cross session boundaries.
+* **Mechanism:** `normalize_continuous_to_vendor_parquet.py` processes each trading day in isolation before concatenation.
+
+## 3. Proof & Verification
+
+### Verified Contracts
+* **Schema Validity:** Verified that all output Parquet files contain `open`, `high`, `low`, `close` (float64) and `volume` (int64).
+* **Timezone Correctness:** Verified that 09:30 ET aligns correctly regardless of UTC offset (-4/-5).
+
+### Artifacts
+* **Inventory Report:** `outputs/data_inventory.csv` (Audits row counts per session).
+
+### Test Coverage
+| Invariant | Test ID |
+| :--- | :--- |
+| **Schema Enforcement** | `tests/test_data_io.py::test_load_schema_validity` |
+| **Session Completeness** | `tests/test_data_io.py::test_rth_bar_count` |
+| **DST Handling** | `tests/test_data_io.py::test_dst_transition_alignment` |
+| **No Session Bleed** | `tests/test_data_io.py::test_no_cross_session_ffill` |
+
+## 4. Definition of Done
+- Data Specification Documented (`docs/data/data-specification.md`)
+- Ingestion Script Implemented (`scripts/databento_fetch_continuous.py`)
+- Normalization Script Implemented (`scripts/normalize_continuous_to_vendor_parquet.py`)
+- Inventory Audit Tool Implemented (`scripts/data_inventory.py`)
+- CI Tests Green (Python 3.10/3.11)

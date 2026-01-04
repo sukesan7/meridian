@@ -7,9 +7,12 @@ Differentiates between 'normal' trading hours and 'hot' windows (e.g., market op
 
 from __future__ import annotations
 
+from datetime import time as dtime
 from typing import Any, Literal
+
 import pandas as pd
-from .config import SlippageCfg, Config
+
+from .config import Config, SlippageCfg
 
 Side = Literal["long", "short"]
 
@@ -71,11 +74,11 @@ def _is_hot_window(ts: pd.Timestamp, slip_cfg: SlippageCfg) -> bool:
     else:
         ts_et = ts
 
-    t = ts_et.time()
+    t: dtime = ts_et.to_pydatetime().time()
     try:
-        start = pd.Timestamp(slip_cfg.hot_start).time()
-        end = pd.Timestamp(slip_cfg.hot_end).time()
-        return start <= t < end
+        start: dtime = pd.Timestamp(slip_cfg.hot_start).to_pydatetime().time()
+        end: dtime = pd.Timestamp(slip_cfg.hot_end).to_pydatetime().time()
+        return bool(start <= t < end)
     except ValueError:
         return False
 

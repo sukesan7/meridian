@@ -1,60 +1,83 @@
 # Meridian — Strategy Validation Results
 
-## 1. Summary (v1.0.1 Baseline)
+## 1. Summary (v1_0_5_baseline)
 
-This document contains the **Audited Performance Report** for the Meridian execution engine (v1.0.1). This baseline establishes the "Honest PnL" after the removal of look-ahead bias and the correct alignment of news day filtering.
+This document contains the **Audited Performance Report** for the Meridian execution engine.
+It is generated programmatically from run artifacts (`run_meta.json`, `summary.json`) and optional profiler timing outputs.
 
-* **Run Label**: `v1_0_1_baseline`
-* **Data Source**: `NQ.v.0 (2024-12-01 to 2025-11-30)`
-* **Integrity Status**: **PASS** (Delayed signal confirmation enforced).
+* **Run Label**: `v1_0_5_backtest_baseline`
+* **Data Source**: `data\vendor_parquet\NQ\NQ.v.0_2024-12-01_2025-11-30_RTH.parquet`
 
 ## 2. Headline Performance Stats (Backtest)
 
-*Performance derived from a 12-month In-Sample (IS) run on NQ.*
-
-| Metric             | Value     | Description                                     |
-| :----------------- | :-------- | :---------------------------------------------- |
-| **Total Trades**   | `61`      | Increased slightly due to news trading enabled. |
-| **Win Rate**       | `59.0%`   | Solid trend following win-rate.                 |
-| **Expectancy (R)** | `0.20`    | Realized risk-adjusted return per trade.        |
-| **Avg Win**        | `0.92 R`  | Captures ~0.9R per successful trade.            |
-| **Avg Loss**       | `-0.83 R` | Controlled losses near -0.83R (Stop Loss).      |
-| **SQN**            | `1.69`    | "Average" system quality (Tradeable).           |
+| Metric | Value | Description |
+| --- | --- | --- |
+| **Total Trades** | `67` |  |
+| **Win Rate** | `0.5075` | Target > 40% |
+| **Expectancy (R)** | `0.09082` | Risk-adjusted return per trade |
+| **Avg R** | `0.09082` |  |
+| **Avg Win** | `0.9442` |  |
+| **Avg Loss** | `-0.813` |  |
+| **Max Drawdown (R)** | `4.886` |  |
+| **SQN** | `0.7825` | System Quality Number |
 
 ## 3. Walk-Forward Analysis (Robustness)
 
-The Walk-Forward engine prevents overfitting by enforcing a strict separation between In-Sample (IS) optimization and Out-of-Sample (OOS) verification.
+The Walk-Forward engine prevents overfitting by enforcing a strict separation between In-Sample (IS) calibration and Out-of-Sample (OOS) verification.
 
-* **Window**: 63 Days IS / 21 Days OOS.
+* **Window**: `63` Days IS / `21` Days OOS.
 
-| Metric             | Value    | Interpretation                      |
-| :----------------- | :------- | :---------------------------------- |
-| **OOS Trades**     | `55`     | Consistent frequency OOS.           |
-| **OOS Win Rate**   | `47%`    | Expected degradation from IS (59%). |
-| **OOS Expectancy** | `0.09 R` | Strategy remains profitable OOS.    |
-| **Max Drawdown**   | `4.26 R` | Comparable to IS Drawdown (3.88 R). |
+| Metric | Value | Interpretation |
+| --- | --- | --- |
+| **SQN** | `0.9872` |  |
+| **avg_R** | `0.326` |  |
+| **avg_loss_R** | `-0.7471` |  |
+| **avg_win_R** | `1.185` |  |
+| **expectancy_R** | `0.326` |  |
+| **is_end** | `2025-03-03` |  |
+| **is_start** | `2024-12-02` |  |
+| **maxDD_R** | `1.988` |  |
+| **oos_end** | `2025-04-01` |  |
+| **oos_start** | `2025-03-04` |  |
+| **sum_R** | `2.934` |  |
+| **trades** | `9` |  |
+| **trades_per_month** | `9` |  |
+| **win_rate** | `0.5556` |  |
+| **window_id** | `0` |  |
 
 ## 4. Monte Carlo Simulation (Risk Assessment)
 
-Stress-testing the system against sequence risk using block-bootstrap resampling on the v1.0.1 trade list.
+Stress-testing sequence risk using block-bootstrap resampling on realized R-multiples.
 
 * **Iterations**: `2500` paths
-* **Seed**: `7`
-* **Risk Per Trade**: `1.0%`
+* **Seed**: `105`
+* **Risk Per Trade**: `0.01`
 
-| Risk Metric         | Value   | Interpretation                    |
-| :------------------ | :------ | :-------------------------------- |
-| **Risk of Ruin**    | `0.0%`  | Probability of account hitting 0. |
-| **Median CAGR**     | `13.2%` | Expected annual growth rate.      |
-| **Max DD (95th %)** | `8.5%`  | Worst-case scenario (Tail Risk).  |
-| **Max DD (50th %)** | `4.4%`  | Expected Drawdown.                |
+| Risk Metric | Value | Interpretation |
+| --- | --- | --- |
+| **n_paths** | `2500` |  |
+| **risk_per_trade** | `0.01` |  |
+| **blowup_rate** | `0` |  |
+| **median_cagr** | `0.06208` |  |
+| **maxDD_pct_p95** | `0.117` |  |
+| **maxDD_pct_p50** | `0.05932` |  |
+
+## 4.5 Performance Profile (Reference Machine)
+
+| Timing File | Seconds | Command (truncated) |
+| --- | --- | --- |
+| **outputs/profiles/v1_0_5_baseline/backtest_prof/backtest.timing.json** | `13.3` | backtest --config configs\base.yaml --data data\vendor_parquet\NQ\NQ.v.0_2024-12-01_2025-11-30_RTH.parquet --out-dir ... |
+| **outputs/profiles/v1_0_5_baseline/walkforward_prof/walkforward.timing.json** | `15.66` | walkforward --config configs\base.yaml --data data\vendor_parquet\NQ\NQ.v.0_2024-12-01_2025-11-30_RTH.parquet --is-days ... |
+| **outputs/profiles/v1_0_5_baseline/montecarlo_prof/monte_carlo.timing.json** | `0.4912` | monte-carlo --config configs\base.yaml --trades outputs\backtest\v1_0_5_backtest_baseline\trades.parquet --n-paths ... |
 
 ## 5. Reproducibility Contract
 
-Meridian guarantees full reproducibility of these results via the following artifacts:
+Meridian guarantees reproducibility of reported results via immutable inputs and recorded metadata:
 
 * **Config Snapshot**: stored in `run_meta.json`.
-* **Deterministic Seeding**: Random seed `42` (Backtest) and `7` (Monte Carlo).
-* **Artifact Location**: `outputs/backtest/v1_0_1_baseline`
+* **Deterministic Seeding**: Seed `105` for baseline runs (unless overridden per module).
+* **Backtest Artifacts**: `outputs/backtest/v1_0_5_backtest_baseline`
+* **Walkforward Artifacts**: `outputs/walkforward/v1_0_5_walkforward_baseline`
+* **Monte Carlo Artifacts**: `outputs/monte-carlo/v1_0_5_montecarlo_baseline`
 
 > **Disclaimer:** Past performance is not indicative of future results.

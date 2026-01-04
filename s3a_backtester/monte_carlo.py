@@ -19,7 +19,8 @@ def _realized_r(trades: pd.DataFrame) -> np.ndarray:
     if trades is None or len(trades) == 0 or "realized_R" not in trades.columns:
         return np.array([], dtype=float)
     r = pd.to_numeric(trades["realized_R"], errors="coerce").fillna(0.0)
-    return r.to_numpy(dtype=float)
+    arr = r.to_numpy(dtype=np.float64)
+    return np.asarray(arr, dtype=np.float64)
 
 
 def _infer_years_from_trades(trades: pd.DataFrame) -> float | None:

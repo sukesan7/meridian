@@ -18,6 +18,7 @@ Arguments:
 """
 
 from __future__ import annotations
+
 import argparse
 import cProfile
 import io
@@ -25,6 +26,7 @@ import json
 import pstats
 import time
 from pathlib import Path
+
 from s3a_backtester.cli import main as cli_main
 
 

@@ -9,6 +9,7 @@ Coverage:
 """
 
 import pandas as pd
+from unittest.mock import MagicMock
 from s3a_backtester.engine import generate_signals, simulate_trades
 from s3a_backtester.config import Config, SlippageCfg, RiskCfg, EntryWindow
 
@@ -135,13 +136,13 @@ def test_next_open_execution_logic() -> None:
     assert len(trades_next) == 1
     assert len(trades_close) == 1
 
-    assert (
-        trades_next.iloc[0]["entry"] == 105.0
-    ), "Failed: next_open mode did not look ahead!"
+    assert trades_next.iloc[0]["entry"] == 105.0, (
+        "Failed: next_open mode did not look ahead!"
+    )
 
-    assert (
-        trades_close.iloc[0]["entry"] == 100.0
-    ), "Failed: close mode did not fill at signal bar!"
+    assert trades_close.iloc[0]["entry"] == 100.0, (
+        "Failed: close mode did not fill at signal bar!"
+    )
 
 
 def test_simulate_gap_risk_rejection() -> None:
@@ -236,3 +237,84 @@ def test_next_open_causality_contract() -> None:
 
     # Date must match the entry
     assert t["date"] == dates[1].date()
+
+
+def test_engine_rejects_gap_risk_at_fill():
+    """
+    Verifies that simulate_trades rejects a trade if the 'next_open'
+    gaps such that risk > max_risk_cap.
+    """
+    # 1. Setup Config with strict risk limits
+    cfg_mock = MagicMock()
+    cfg_mock.risk.max_stop_or_mult = 1.0
+    cfg_mock.instrument.tick_size = 0.25
+    cfg_mock.slippage.mode = "next_open"  # Crucial: fill at next bar
+
+    # 2. Setup Data
+    dates = pd.date_range("2024-01-01 09:30", periods=2, freq="1min")
+    signals = pd.DataFrame(
+        {
+            "close": [100.0, 105.0],  # 09:30 close is 100
+            "open": [100.0, 105.0],  # 09:31 OPEN GAPS TO 105!
+            "high": [100.0, 105.0],
+            "low": [100.0, 105.0],
+            "trigger_ok": [True, False],
+            "direction": [1, 0],
+            "stop_price": [99.0, 99.0],  # Stop at 99.0
+            "or_high": [100.5, 100.5],
+            "or_low": [99.5, 99.5],  # OR Height = 1.0
+            "time_window_ok": [True, True],
+            "disqualified_2sigma": [False, False],
+        },
+        index=dates,
+    )
+
+    # 3. Calculation:
+    # Signal at 09:30.
+    # Fill at 09:31 Open = 105.0.
+    # Risk = 105.0 - 99.0 = 6.0.
+    # Max Cap = OR(1.0) * Mult(1.0) = 1.0.
+    # 6.0 > 1.0 -> REJECT.
+
+    # 4. Run Simulation
+    trades = simulate_trades(signals, signals, cfg_mock)
+
+    # 5. Assert
+    assert trades.empty, "Trade should have been rejected due to gap risk violation."
+
+
+def test_engine_accepts_valid_risk_at_fill():
+    """
+    Control test: proves the trade works if the gap is small.
+    """
+    cfg_mock = MagicMock()
+    cfg_mock.risk.max_stop_or_mult = 1.5
+    cfg_mock.instrument.tick_size = 0.25
+    cfg_mock.slippage.mode = "next_open"
+    cfg_mock.time_stop.tp1_timeout_min = 60
+    cfg_mock.time_stop.entry_timeout_min = 120
+    cfg_mock.time_stop.max_holding_min = 240
+    cfg_mock.time_stop.timer_start_on_tp1 = False
+
+    dates = pd.date_range("2024-01-01 09:30", periods=2, freq="1min")
+    signals = pd.DataFrame(
+        {
+            "close": [100.0, 100.0],
+            "open": [100.0, 100.0],  # 09:31 Open is 100 (No Gap)
+            "high": [100.0, 100.0],
+            "low": [100.0, 100.0],
+            "trigger_ok": [True, False],
+            "direction": [1, 0],
+            "stop_price": [99.0, 99.0],  # Risk = 1.0
+            "or_high": [100.5, 100.5],
+            "or_low": [99.5, 99.5],  # OR Height = 1.0. Max Risk = 1.0.
+            "time_window_ok": [True, True],
+            "disqualified_2sigma": [False, False],
+        },
+        index=dates,
+    )
+
+    # Risk (1.0) <= Cap (1.0) -> ACCEPT.
+    trades = simulate_trades(signals, signals, cfg_mock)
+
+    assert len(trades) == 1, "Trade should be accepted when risk is within limits."

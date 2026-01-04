@@ -1,0 +1,21 @@
+# Local dev = everything CI has, plus notebooks + charts + convenience
+-r requirements-ci.in
+
+# Notebooks / interactive
+jupyterlab
+ipykernel
+
+# Plotting / reports (only if you actually use them locally)
+matplotlib
+
+# Optional: data inspection
+# tabulate
+
+# Optional: nicer profiling UI (if you use it)
+# snakeviz
+
+# Optional: local coverage report formats
+# coverage[toml]
+
+# Optional: if you run formatting hooks locally via pre-commit
+pre-commit

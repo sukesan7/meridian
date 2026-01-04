@@ -16,8 +16,8 @@ The session is considered "unlocked" for trading when price successfully breaks 
 
 ### 2.2 The "Zone" (State 2)
 Once unlocked, the algo waits for a mean-reversion pullback into value.
-* **Long Zone:** First pullback into `[VWAP, VWAP + 1σ]`.
-* **Short Zone:** First pullback into `[VWAP - 1σ, VWAP]`.
+* **Long Zone:** First pullback into `[VWAP, VWAP + 1 sigma]`.
+* **Short Zone:** First pullback into `[VWAP - 1 sigma, VWAP]`.
 * **Constraint:** Only the *first* valid zone touch per session is tradeable.
 
 ### 2.3 The "Trigger" (State 3)
@@ -29,7 +29,7 @@ Entry occurs on micro-structure validation within the Zone.
 ## 3. Risk & Execution
 
 ### 3.1 Invalidations (Gating)
-* **2σ Disqualifier:** If price touches the *opposite* 2σ band (e.g., Short Band while looking for Longs), the session is disqualified immediately.
+* **2-Sigma Disqualifier:** If price touches the *opposite* 2-sigma band (e.g., Short Band while looking for Longs), the session is disqualified immediately.
 * **Risk Cap:** If `(Entry - Stop)` > `1.25 * OR_Height`, the trade is skipped (Volatility too high).
 
 ### 3.2 Management

@@ -1,0 +1,6 @@
+# Meridian runtime deps ONLY.
+numpy<2.3
+pandas
+pyarrow
+PyYAML
+scipy

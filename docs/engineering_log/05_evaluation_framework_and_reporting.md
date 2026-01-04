@@ -1,37 +1,55 @@
 # Phase 5: Evaluation Framework & Reporting
 
-## 1. Objective
-Build the "Research Harness" to rigorously evaluate strategy performance. This includes standardized metrics, Walk-Forward Analysis (WFA) to prevent overfitting, and Monte Carlo simulations for robustness testing.
+**Status:** Complete
 
-## 2. Key Implementations
+**Focus:** Walk-Forward Optimization (WFO), Monte Carlo, Reproducibility
 
-### 2.1 Metrics Suite (`metrics.py`)
-* **Standardization**: Unified calculation of `Expectancy (R)`, `SQN`, `Win Rate`, and `Max Drawdown` across all report types.
-* **Grouping**: Added regime analysis (metrics grouped by Day of Week, OR Quartile).
+## 1. Objectives
+* Implement rigorous validation methods to detect overfitting.
+* Generate auditor-grade reports (Tearsheets).
+* Verify system determinism (The "Bit-Perfect" Gate).
 
-### 2.2 Walk-Forward Engine (`walkforward.py`)
-* **Rolling Window Validation**:
-    * Implemented `In-Sample (IS)` optimization windows (63 days) followed by `Out-of-Sample (OOS)` verification windows (21 days).
-    * **Constraint:** Strict parameter freezing to ensure "No Bleed" from future data.
+## 2. Implementation Details
 
-### 2.3 Monte Carlo Engine (`monte_carlo.py`)
-* **Bootstrap Method**: Implemented "Block Bootstrap" (block size = 5 trades) to preserve short-term serial correlation in trade results.
-* **Risk Modeling**: Simulation of 2,000 equity paths to estimate `MaxDD @ 95% Confidence` and `Risk of Ruin`.
+### A. Walk-Forward Analysis
+* **Method:** Sliding Window (Train/Test).
+* **Configuration:** 63 Days In-Sample (IS) / 21 Days Out-of-Sample (OOS).
+* **Goal:** Verify that OOS performance does not degrade significantly compared to IS performance.
 
-### 2.4 CLI & Reporting (`meridian-run`)
-* **Workflow**: Unified all commands (`backtest`, `walkforward`, `monte-carlo`) under a single CLI entry point.
-* **Reproducibility**:
-    * Every run saves a `run_meta.json` (Config Snapshot) and `summary.json`.
-    * Results are deterministic based on the provided random seed.
+### B. Monte Carlo Simulation
+* **Method:** Block Bootstrap resampling of realized trade returns.
+* **Iterations:** 2,500 paths.
+* **Goal:** Estimate `Max Drawdown (95% CI)` and `Risk of Ruin`.
 
-## 3. Challenges & Fixes
-* **Bug Fix (Drawdown Anchoring)**:
-    * *Issue:* MaxDD reported as 0 if the first trade was a loss (Equity < Starting Capital).
-    * *Fix:* Anchored the equity curve at 0 before computing peak-to-valley decline.
-* **Data Validation**:
-    * Investigated low trade counts; confirmed data integrity (UTC timestamps) and verified that scarcity was due to strict Strategy Logic, not data loss.
+### C. Determinism Gate
+We implemented a strict regression test in CI.
+* **Procedure:** Run Backtest A $\to$ Run Backtest B (same seed).
+* **Check:** SHA-256 hash of `trades.parquet` must be identical.
 
-## 4. Current Status (12-Month NQ Run)
-* **Backtest**: 43 Trades, Expectancy ~0.42R.
-* **Walk-Forward**: Robustness confirmed; OOS performance did not collapse vs. IS.
-* **Next Steps**: Expand dataset to 5 years and implement cross-asset validation (ES).
+## 3. Proof & Verification
+
+### Verified Contracts
+* **Determinism:** CI fails if artifacts differ by even 1 byte.
+* **Robustness:** See [`docs/system/STRATEGY_RESULTS.md`](../system/STRATEGY_RESULTS.md) for the latest generated metrics.
+
+### Artifacts
+* **Performance Report:** `assets/performance.png`
+* **Run Metadata:** `outputs/.../run_meta.json` (Contains Config + Seed).
+
+### Test Coverage
+| Invariant | Test ID |
+| :--- | :--- |
+| **Determinism** | `scripts/verify_determinism.py` (Run in CI) |
+| **WFO Window Logic** | `tests/test_optimization.py::test_wfo_window_generation` |
+| **Monte Carlo Seed** | `tests/test_reporting.py::test_monte_carlo_reproducibility` |
+
+## 4. Known Limitations
+1.  **Trade Scarcity:** Strategy 3A is low-frequency. Confidence intervals on Expectancy are wide.
+2.  **Partial Days:** Holidays are treated as normal sessions; reduced liquidity on these days is not modeled.
+3.  **Execution Model:** We assume full liquidity at the touch (no order book queue modeling).
+
+## 5. Definition of Done
+- WFO Engine Implemented
+- Monte Carlo Engine Implemented
+- Determinism Script in CI
+- Final Documentation Audited

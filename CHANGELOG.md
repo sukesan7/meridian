@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-01-04
+### Fixed
+- **Core Engine:** Removed non-ASCII characters (`±`, `σ`) from column names in `engine.py` to satisfy Linux/Windows cross-platform audit requirements.
+- **CI/CD:** Hardened GitHub Actions pipeline:
+  - Upgraded runner to `ubuntu-24.04`.
+  - Added `PYTHONHASHSEED: "0"` for strict hash determinism.
+  - Enforced `pip install --no-deps -r requirements.lock` to prevent dependency drift.
+- **Developer Experience:** Updated VS Code configuration (`settings.json`, `extensions.json`) to enforce Ruff formatting and handle Line Endings (LF) automatically on Windows.
+
+### Documentation
+- **Synchronized:** Updated `ARCHITECTURE`, `PERFORMANCE`, and `STRATEGY_SPEC` to match the actual v1.0.5 codebase.
+- **Benchmarks:** Updated performance stats with real profiling data (Backtest: ~13.3s, Monte Carlo: ~0.49s).
+- **Engineering Logs:** Converted `docs/engineering_log/` from a dev diary into a verifiable Audit Trail with strict invariant references.
+- **Visuals:** Updated `assets/` with new Equity Curve and Strategy Logic proofs showing v1.0.5 behavior.
+
+### Changed
+- **Tearsheet:** Upgraded `generate_tearsheet.py` to produce higher-grade reports (Rolling Win Rate, Drawdown Duration, Monthly Returns).
+
+## [1.0.4] - 2026-01-02
+### Fixed
+- **Time Contract:** Standardized internal timestamps to "Bar-Start" convention (Model A). Logic at `09:30:00` uses `09:30` bar data; execution occurs at `09:31` (Next Open).
+- **Risk Decoupling:** Removed risk checks from `generate_signals` to prevent execution logic from leaking into the signal layer. Risk is now enforced exclusively in `simulate_trades`.
+- **Schema:** Added `signal_time` to the `trades.parquet` schema to prove causal separation between Signal and Entry.
+
+### Changed
+- **Determinism:** Renamed "Bit-Perfect Identity" to **"Semantic Determinism"** in all verify scripts and CI steps to accurately reflect float tolerance handling.
+- **Data Pipeline:** Standardized naming convention to `NQ.v.0_{START}_{END}_RTH.parquet` and added strict session boundary checks (No cross-session forward-fill).
+
 ## [v1.0.3] - 2025-12-30
 ### Critical Integrity Patch
 This release establishes the "Verified Baseline" for Strategy 3A, addressing critical look-ahead bias and execution gating issues identified during the initial code audit. It also introduces strict dependency locking and performance visualization.
@@ -78,6 +106,34 @@ Introduction of the full trade lifecycle and session-level gating.
 - **Continuous Futures:** Added `scripts/databento_fetch_continuous.py` for credit-safe data ingestion.
 
 ---
+## [1.0.5] - 2026-01-04
+### Fixed
+- **Core Engine:** Removed non-ASCII characters (`±`, `σ`) from column names in `engine.py` to satisfy Linux/Windows cross-platform audit requirements.
+- **CI/CD:** Hardened GitHub Actions pipeline:
+  - Upgraded runner to `ubuntu-24.04`.
+  - Added `PYTHONHASHSEED: "0"` for strict hash determinism.
+  - Enforced `pip install --no-deps -r requirements.lock` to prevent dependency drift.
+- **Developer Experience:** Updated VS Code configuration (`settings.json`, `extensions.json`) to enforce Ruff formatting and handle Line Endings (LF) automatically on Windows.
+
+### Documentation
+- **Synchronized:** Updated `ARCHITECTURE`, `PERFORMANCE`, and `STRATEGY_SPEC` to match the actual v1.0.5 codebase.
+- **Benchmarks:** Updated performance stats with real profiling data (Backtest: ~13.3s, Monte Carlo: ~0.49s).
+- **Engineering Logs:** Converted `docs/engineering_log/` from a dev diary into a verifiable Audit Trail with strict invariant references.
+- **Visuals:** Updated `assets/` with new Equity Curve and Strategy Logic proofs showing v1.0.5 behavior.
+
+### Changed
+- **Tearsheet:** Upgraded `generate_tearsheet.py` to produce institutional-grade reports (Rolling Win Rate, Drawdown Duration, Monthly Returns).
+
+## [1.0.4] - 2026-01-04
+### Fixed
+- **Time Contract:** Standardized internal timestamps to "Bar-Start" convention (Model A). Logic at `09:30:00` uses `09:30` bar data; execution occurs at `09:31` (Next Open).
+- **Risk Decoupling:** Removed risk checks from `generate_signals` to prevent execution logic from leaking into the signal layer. Risk is now enforced exclusively in `simulate_trades`.
+- **Schema:** Added `signal_time` to the `trades.parquet` schema to prove causal separation between Signal and Entry.
+
+### Changed
+- **Determinism:** Renamed "Bit-Perfect Identity" to **"Semantic Determinism"** in all verify scripts and CI steps to accurately reflect float tolerance handling.
+- **Data Pipeline:** Standardized naming convention to `NQ.v.0_{START}_{END}_RTH.parquet` and added strict session boundary checks (No cross-session forward-fill).
+
 
 ## [v0.3.0] - 2025-11-27
 ### Triggers & Risk

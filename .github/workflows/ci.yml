@@ -1,114 +1,124 @@
 name: Meridian CI
 
 on:
-    push:
-        branches: ["main"]
-        tags: ["v*"]
-    pull_request:
-        branches: ["main"]
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_BUILD_ISOLATION: "1"
+  SETUPTOOLS_USE_DISTUTILS: "local"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+
 
 jobs:
-    # --- JOB 1: Code Quality & Unit Tests ---
-    quality-gate:
-        name: Quality & Tests (Python ${{ matrix.python-version }})
-        runs-on: ubuntu-latest
-        strategy:
-            fail-fast: false
-            matrix:
-                python-version: ["3.10", "3.11"]
+  quality-gate:
+    name: Quality & Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
 
-        steps:
-            - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Set up Python ${{ matrix.python-version }}
-              uses: actions/setup-python@v5
-              with:
-                  python-version: ${{ matrix.python-version }}
-                  cache: "pip"
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: |
+            requirements-ci.lock
+            pyproject.toml
 
-            - name: Install Dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  # Install package + dev tools (ruff, mypy, pytest) from pyproject.toml
-                  # ".[dev]" means: install current dir (.) + the [dev] extras
-                  pip install --no-build-isolation ".[dev]"
+      - name: Install Dependencies (CI Locked)
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-ci.lock
 
-            - name: Enforce Code Style (Ruff)
-              run: |
-                  ruff check .
-                  # ruff format --check .  (commented out since it breaks against Black on local pre-commit)
+      - name: Install Meridian (no deps, no build isolation)
+        run: |
+          python -m pip install . --no-deps --no-build-isolation
+          python -m pip check
 
-            - name: Static Type Check (Mypy)
-              run: |
-                  mypy s3a_backtester tests
+      - name: Enforce Code Style (Ruff)
+        run: |
+          ruff check .
+          ruff format --check .
 
-            - name: Run Unit Tests
-              run: |
-                  pytest -v --cov=s3a_backtester --cov-report=term-missing tests/
+      - name: Static Type Check (Mypy)
+        run: |
+          mypy s3a_backtester tests
 
-    # --- JOB 2: The Determinism Gate ---
-    determinism-check:
-        name: Determinism Verification
-        runs-on: ubuntu-latest
-        needs: quality-gate
-        steps:
-            - uses: actions/checkout@v4
+      - name: Run Unit Tests
+        run: |
+          pytest -q --maxfail=1 \
+            --cov=s3a_backtester --cov-report=term-missing \
+            tests/
 
-            - name: Set up Python 3.11
-              uses: actions/setup-python@v5
-              with:
-                  python-version: "3.11"
+  determinism-check:
+    name: Determinism Verification
+    runs-on: ubuntu-24.04
+    needs: quality-gate
 
-            - name: Install Dependencies
-              run: |
-                  python -m pip install --upgrade pip
-                  # Install package + dev tools (needed for verification scripts)
-                  pip install --no-build-isolation ".[dev]"
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Generate Synthetic Data
-              run: |
-                  python -c "
-                  import pandas as pd
-                  import numpy as np
-                  dates = pd.date_range('2024-01-01', '2024-01-05', freq='1min', tz='America/New_York')
-                  np.random.seed(42)
-                  # Random walk price generation
-                  prices = 100 + np.random.randn(len(dates)).cumsum()
-                  df = pd.DataFrame({
-                      'open': prices,
-                      'high': prices + 1,
-                      'low': prices - 1,
-                      'close': prices,
-                      'volume': 1000
-                  }, index=dates)
-                  df.index.name = 'datetime'
-                  df.to_csv('ci_data.csv')
-                  "
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements-ci.lock
+            pyproject.toml
 
-            - name: Run Backtest A (Reference)
-              run: |
-                  meridian-run backtest \
-                    --config configs/base.yaml \
-                    --data ci_data.csv \
-                    --out-dir ci_artifacts \
-                    --run-id run_A \
-                    --seed 12345
+      - name: Install Dependencies (CI Locked)
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-ci.lock
 
-            - name: Run Backtest B (Replication)
-              run: |
-                  meridian-run backtest \
-                    --config configs/base.yaml \
-                    --data ci_data.csv \
-                    --out-dir ci_artifacts \
-                    --run-id run_B \
-                    --seed 12345
+      - name: Install Meridian (no deps, no build isolation)
+        run: |
+          python -m pip install . --no-deps --no-build-isolation
+          python -m pip check
 
-            - name: Verify Bit-Perfect Identity
-              run: |
-                  python scripts/debug_tools/verify_determinism.py \
-                    ci_artifacts/run_A/trades.parquet \
-                    ci_artifacts/run_B/trades.parquet
+      - name: Generate CI Fixture Data (RTH-only)
+        run: |
+          python scripts/ci/make_ci_data.py --out ci_data.parquet --format parquet
+
+      - name: Run Backtest A (Reference)
+        run: |
+          meridian-run backtest \
+            --config configs/base.yaml \
+            --data ci_data.parquet \
+            --out-dir ci_artifacts \
+            --run-id run_A \
+            --seed 12345
+
+      - name: Run Backtest B (Replication)
+        run: |
+          meridian-run backtest \
+            --config configs/base.yaml \
+            --data ci_data.parquet \
+            --out-dir ci_artifacts \
+            --run-id run_B \
+            --seed 12345
+
+      - name: Verify Semantic Determinism (Trades)
+        run: |
+          python scripts/debug_tools/verify_determinism.py \
+            ci_artifacts/run_A/trades.parquet \
+            ci_artifacts/run_B/trades.parquet

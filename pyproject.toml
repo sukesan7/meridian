@@ -4,40 +4,60 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meridian-core"
-version = "1.0.4"
+version = "1.0.5"
 description = "Deterministic backtester for Strategy 3A (VWAP Trend Pullback)"
 readme = "README.md"
 requires-python = ">=3.10"
+
+# IMPORTANT:
+# Keep this list to *runtime* requirements only.
+# Anything used for notebooks, optional data vendors, or interactive tooling
+# belongs under [project.optional-dependencies].
 dependencies = [
-    "async-timeout>=4.0.3",
-    "databento>=0.29,<1.0",
-    "numpy>=1.26,<2.0",
+    # Core numerical + data stack (CI/runtime)
+    "numpy>=1.26,<2.3",
     "pandas>=2.2,<3.0",
     "pyarrow>=14.0",
-    "pyyaml>=6.0,<7.0",
+    "PyYAML>=6.0,<7.0",
     "scipy>=1.11,<1.16",
-    "contourpy>=1.2,<1.3",
-    "pexpect>=4.9.0",
-    "ipython>=8.18,<9.0"
 ]
 
 [project.urls]
 Repository = "https://github.com/sukesan7/meridian"
 
 [project.optional-dependencies]
+# Local dev + CI tooling (format/lint/type/test)
 dev = [
-    "black>=24.0",
-    "ipykernel>=6.29",
-    "jupyterlab>=4.0",
-    "matplotlib>=3.8",
     "mypy>=1.8",
     "pandas-stubs>=2.1",
     "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-cov>=4.1",
     "ruff>=0.6.0",
+    "types-PyYAML>=6.0",
+    "pip-tools>=7.4",
+]
+
+# Notebooks / charts / interactive exploration (NOT required at runtime)
+notebooks = [
+    "ipykernel>=6.29",
+    "jupyterlab>=4.0",
+    "matplotlib>=3.8",
     "seaborn>=0.13",
-    "types-PyYAML>=6.0"
+    "ipython>=8.18,<9.0",
+]
+
+# Optional: Databento ingestion pipeline (only if you use it)
+databento = [
+    "databento>=0.29,<1.0",
+]
+
+# Optional: terminal / runtime helpers if you truly need them in some scripts
+# (leave empty unless you actually import these in the core package)
+runtime-extras = [
+    # "pexpect>=4.9.0",
+    # "contourpy>=1.2,<1.3",
+    # "async-timeout>=4.0.3",
 ]
 
 [project.scripts]
