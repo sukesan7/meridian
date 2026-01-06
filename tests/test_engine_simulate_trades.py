@@ -467,6 +467,7 @@ def test_lifecycle_bars_source_market_not_signals(monkeypatch) -> None:
         trend_ok,
         sigma_ok,
         dd_ok,
+        slippage_cfg=None,
     ):
         # ASSERT: OHLC comes from df1, not signals
         assert float(bars["open"].iloc[0]) == 100.0
@@ -491,3 +492,44 @@ def test_lifecycle_bars_source_market_not_signals(monkeypatch) -> None:
 
     trades = eng.simulate_trades(df1, signals, cfg)
     assert len(trades) == 1
+
+
+def test_exit_slippage_applied_to_stop() -> None:
+    dates = pd.date_range(
+        "2024-01-01 09:30", periods=3, freq="1min", tz="America/New_York"
+    )
+    df1 = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.0],
+            "high": [100.0, 100.0, 100.0],
+            "low": [100.0, 100.0, 98.0],
+            "close": [100.0, 100.0, 100.0],
+            "volume": [100, 100, 100],
+            "or_high": [200.0, 200.0, 200.0],
+            "or_low": [0.0, 0.0, 0.0],
+        },
+        index=dates,
+    )
+
+    signals = df1.copy()
+    signals["direction"] = [1, 0, 0]
+    signals["trigger_ok"] = [True, False, False]
+    signals["time_window_ok"] = True
+    signals["disqualified_2sigma"] = False
+    signals["stop_price"] = 99.0
+
+    cfg = Config(
+        slippage=SlippageCfg(
+            mode="next_open",
+            normal_ticks=0,
+            hot_ticks=2,
+            hot_start="09:30",
+            hot_end="09:40",
+            tick_size=1.0,
+        )
+    )
+
+    trades = simulate_trades(df1, signals, cfg)
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["slippage_exit_ticks"] == -2.0

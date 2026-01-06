@@ -73,6 +73,9 @@ def test_load_config_integration(tmp_path):
       max_stop_or_mult: 1.0
     slippage:
       normal_ticks: 2
+    filters:
+      enable_low_atr: false
+      enable_dom_filter: false
     """,
         encoding="utf-8",
     )
@@ -83,6 +86,8 @@ def test_load_config_integration(tmp_path):
     # 3. Assert values were merged correctly
     assert cfg.risk.max_stop_or_mult == 1.0
     assert cfg.slippage.normal_ticks == 2
+    assert cfg.filters.enable_low_atr is False
+    assert cfg.filters.enable_dom_filter is False
     # Assert defaults remained for untouched fields
     assert cfg.instrument == "NQ"
 

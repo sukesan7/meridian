@@ -222,6 +222,7 @@ def simulate_trades(
         sl_ticks = risk_per_unit / tick_size if tick_size > 0 else np.nan
 
         slip_ticks = 0.0
+        slip_exit_ticks = 0.0
         if tick_size > 0:
             slip_ticks = (entry_price - raw_price) / tick_size
 
@@ -320,10 +321,13 @@ def simulate_trades(
                 trend_ok=conds.trend_ok,
                 sigma_ok=conds.sigma_ok,
                 dd_ok=conds.dd_ok,
+                slippage_cfg=cfg,
             )
 
             exit_time = lifecycle["exit_time"]
             realized_R = float(lifecycle["realized_R"])
+            exit_price = float(lifecycle.get("exit_price", np.nan))
+            exit_price_raw = float(lifecycle.get("exit_price_raw", np.nan))
             tp1_price = float(lifecycle["tp1_price"])
             tp2_price = (
                 float(lifecycle["tp2_price"])
@@ -336,6 +340,12 @@ def simulate_trades(
                 else np.nan
             )
             time_stop_reason = lifecycle["time_stop_reason"] or "none"
+            if (
+                tick_size > 0
+                and np.isfinite(exit_price)
+                and np.isfinite(exit_price_raw)
+            ):
+                slip_exit_ticks = (exit_price - exit_price_raw) / tick_size
 
         records.append(
             {
@@ -358,7 +368,7 @@ def simulate_trades(
                 "time_stop": time_stop_reason,
                 "disqualifier": "none",
                 "slippage_entry_ticks": float(slip_ticks),
-                "slippage_exit_ticks": 0.0,
+                "slippage_exit_ticks": float(slip_exit_ticks),
             }
         )
 
@@ -409,13 +419,17 @@ def generate_signals(
         and df_5m is not None
         and "trend_5m" in df_5m.columns
     ):
-        out["trend_5m"] = df_5m["trend_5m"].reindex(out.index, method="ffill")
+        trend_5m = df_5m["trend_5m"].shift(1)
+        out["trend_5m"] = (
+            trend_5m.reindex(out.index, method="ffill").fillna(0).astype(float)
+        )
     if (
         "trend_dir_5m" not in out.columns
         and df_5m is not None
         and "trend_dir_5m" in df_5m.columns
     ):
-        out["trend_dir_5m"] = df_5m["trend_dir_5m"].reindex(out.index, method="ffill")
+        trend_dir_5m = df_5m["trend_dir_5m"].shift(1)
+        out["trend_dir_5m"] = trend_dir_5m.reindex(out.index, method="ffill")
 
     required = {
         "close",

@@ -67,6 +67,16 @@ def test_dependency_lock_check() -> None:
     assert "dependency_lock_sha256" in meta
 
 
+def test_dependency_lock_hash_prefers_ci_lock(tmp_path: Path, monkeypatch) -> None:
+    lock = tmp_path / "requirements-ci.lock"
+    lock.write_text("locked-deps", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    meta = build_run_meta(cmd="test", argv=[], run_id="test", outputs_dir=tmp_path)
+
+    assert meta["dependency_lock_sha256"] == sha256_file(lock)
+
+
 def test_artifact_hashing(tmp_path: Path) -> None:
     """
     Ensures artifacts are hashed with size + sha256 for provenance.

@@ -61,7 +61,9 @@ class FiltersCfg:
     skip_tiny_or: bool = True
     tiny_or_mult: float = 0.25
     low_atr_percentile: float = 20.0
+    enable_low_atr: bool = True
     news_blackout: bool = False
+    enable_dom_filter: bool = True
 
 
 @dataclass

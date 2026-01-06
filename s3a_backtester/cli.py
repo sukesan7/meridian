@@ -176,6 +176,7 @@ def build_feature_frames(
     else:
         trend_series = tr5
 
+    trend_series = trend_series.shift(1)
     df1["trend_5m"] = trend_series.reindex(df1.index, method="ffill").fillna(0)
 
     swings_1m = find_swings_1m(df1)
@@ -209,7 +210,7 @@ def cmd_backtest(
     write_signals: bool = True,
     write_trades: bool = True,
     seed: int | None = None,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes a single standard backtest run."""
@@ -287,7 +288,7 @@ def cmd_walkforward(
     write_trades: bool = True,
     write_equity: bool = True,
     seed: int | None = None,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes rolling walk-forward analysis (IS/OOS)."""
@@ -399,7 +400,7 @@ def cmd_mc(
     seed: int | None = None,
     years: float | None = None,
     keep_equity_paths: bool = False,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes Monte Carlo simulation on an existing trades file."""
@@ -501,7 +502,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_bt.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
 
@@ -529,7 +531,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_bt_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
 
@@ -552,7 +555,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_wf.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
     p_wf.add_argument(
@@ -580,7 +584,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_wf_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
     p_wf_old.add_argument(
@@ -593,7 +598,7 @@ def main(argv: list[str] | None = None) -> None:
     # ---------------- monte-carlo ----------------
     p_mc = sub.add_parser("monte-carlo", help="Run Monte Carlo on a trades file")
     p_mc.add_argument("--config", required=True)
-    p_mc.add_argument("--trades-file", required=True)
+    p_mc.add_argument("--trades-file", "--trades", dest="trades_file", required=True)
     p_mc.add_argument("--out-dir", default="outputs/monte-carlo")
     p_mc.add_argument("--run-id", default=None)
     p_mc.add_argument("--n-paths", type=int, default=1000)
@@ -608,7 +613,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_mc.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of trades file (can be slow).",
     )
     p_mc.add_argument(
@@ -632,7 +638,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_mc_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of trades file (can be slow).",
     )
     p_mc_old.add_argument(
@@ -680,10 +687,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd in ("monte-carlo", "run-mc"):
-        # Explicit check for trades_file presence before passing
         trades_file_arg = getattr(args, "trades_file", None)
         if not isinstance(trades_file_arg, str):
-            # This path should be blocked by argparse required=True, but satisfies mypy
             raise ValueError("trades_file is required")
 
         cmd_mc(

@@ -32,19 +32,22 @@ def _artifact_info(path: Path) -> Dict[str, Any]:
 
 def get_dependency_lock_hash() -> Optional[str]:
     """
-    Attempts to locate and hash the 'requirements.lock' file.
-    Assumes the lockfile is in the project root.
+    Attempts to locate and hash a dependency lockfile.
+    Prefers CI lockfiles when present.
     """
     try:
-        lock_path = Path("requirements.lock")
-        if lock_path.exists() and lock_path.is_file():
-            return sha256_file(lock_path)
-
-        lock_path_alt = (
-            Path(__file__).resolve().parent.parent.parent.parent / "requirements.lock"
-        )
-        if lock_path_alt.exists() and lock_path_alt.is_file():
-            return sha256_file(lock_path_alt)
+        root = Path(__file__).resolve().parent.parent
+        candidates = [
+            Path("requirements-ci.lock"),
+            Path("requirements.lock"),
+            Path("requirements-dev.lock"),
+            root / "requirements-ci.lock",
+            root / "requirements.lock",
+            root / "requirements-dev.lock",
+        ]
+        for lock_path in candidates:
+            if lock_path.exists() and lock_path.is_file():
+                return sha256_file(lock_path)
 
     except Exception:
         pass

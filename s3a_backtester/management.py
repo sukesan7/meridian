@@ -10,12 +10,13 @@ Handles the full lifecycle of an active trade, including:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, cast
+from typing import Any, Literal, Mapping, Optional, cast
 
 import numpy as np
 import pandas as pd
 
 from .config import MgmtCfg, TimeStopCfg
+from .slippage import apply_slippage
 
 
 @dataclass
@@ -213,7 +214,6 @@ def run_time_stop(
     if getattr(time_cfg, "mode", "15m") == "none":
         return TimeStopResult(idx=None, time=None, reason=None)
 
-    # NUCLEAR OPTION: Cast index to Any to silence stubborn mypy indexing errors
     idx = cast(Any, bars.index)
 
     entry_time = idx[entry_idx]
@@ -323,18 +323,35 @@ def manage_trade_lifecycle(
     trend_ok: Optional[pd.Series] = None,
     sigma_ok: Optional[pd.Series] = None,
     dd_ok: Optional[pd.Series] = None,
+    slippage_cfg: Any | None = None,
 ) -> dict[str, Any]:
     """Computes the complete outcome of a trade given full session data."""
     high = bars["high"]
     low = bars["low"]
     idx = bars.index
 
+    def _exit_side(side_sign: int) -> Literal["long", "short"]:
+        return "short" if side_sign == 1 else "long"
+
+    def _apply_exit_slip(raw_price: float, ts: pd.Timestamp) -> float:
+        if slippage_cfg is None:
+            return raw_price
+        return float(apply_slippage(_exit_side(side), ts, raw_price, slippage_cfg))
+
     risk_per_unit = float(abs(entry_price - stop_price))
     if risk_per_unit <= 0 or not np.isfinite(risk_per_unit):
+        exit_time = idx[entry_idx]
+        exit_price_raw = entry_price
+        exit_price = (
+            _apply_exit_slip(exit_price_raw, exit_time)
+            if exit_time is not None
+            else exit_price_raw
+        )
         return {
             "exit_idx": entry_idx,
-            "exit_time": idx[entry_idx],
-            "exit_price": entry_price,
+            "exit_time": exit_time,
+            "exit_price": exit_price,
+            "exit_price_raw": exit_price_raw,
             "realized_R": 0.0,
             "tp1_price": entry_price,
             "tp2_price": None,
@@ -404,11 +421,20 @@ def manage_trade_lifecycle(
     )
 
     if earliest_label is None:
+        exit_time = idx[entry_idx]
+        exit_price_raw = entry_price
+        exit_price = (
+            _apply_exit_slip(exit_price_raw, exit_time)
+            if exit_time is not None
+            else exit_price_raw
+        )
+        realized_R = side * (exit_price - entry_price) / risk_per_unit
         return {
             "exit_idx": entry_idx,
-            "exit_time": idx[entry_idx],
-            "exit_price": entry_price,
-            "realized_R": 0.0,
+            "exit_time": exit_time,
+            "exit_price": exit_price,
+            "exit_price_raw": exit_price_raw,
+            "realized_R": realized_R,
             "tp1_price": tp1_res.price,
             "tp2_price": tp2_res.price if tp2_res.hit else None,
             "t_to_tp1_min": None,
@@ -418,24 +444,31 @@ def manage_trade_lifecycle(
 
     if earliest_label != "tp1":
         if earliest_label == "stop":
-            exit_price = stop_price
+            exit_price_raw = stop_price
             reason = "stop"
         elif earliest_label == "tp2":
-            exit_price = float(tp2_res.price) if tp2_res.price else 0.0
+            exit_price_raw = float(tp2_res.price) if tp2_res.price else 0.0
             reason = f"tp2_{tp2_res.label}"
         else:
             if earliest_idx is not None:
-                exit_price = float(bars["close"].iloc[earliest_idx])
+                exit_price_raw = float(bars["close"].iloc[earliest_idx])
             else:
-                exit_price = entry_price
+                exit_price_raw = entry_price
             reason = ts_res.reason or "time_stop"
 
+        exit_time = idx[earliest_idx] if earliest_idx is not None else None
+        exit_price = (
+            _apply_exit_slip(exit_price_raw, exit_time)
+            if exit_time is not None
+            else exit_price_raw
+        )
         realized_R = side * (exit_price - entry_price) / risk_per_unit
 
         return {
             "exit_idx": earliest_idx,
-            "exit_time": idx[earliest_idx] if earliest_idx is not None else None,
+            "exit_time": exit_time,
             "exit_price": exit_price,
+            "exit_price_raw": exit_price_raw,
             "realized_R": realized_R,
             "tp1_price": tp1_res.price,
             "tp2_price": tp2_res.price if tp2_res.hit else None,
@@ -445,8 +478,11 @@ def manage_trade_lifecycle(
         }
 
     scale = float(mgmt_cfg.scale_at_tp1)
-    r_tp1 = float(mgmt_cfg.tp1_R)
-    locked_R = scale * r_tp1
+    if tp1_res.time is not None:
+        tp1_exit_price = _apply_exit_slip(tp1_res.price, tp1_res.time)
+    else:
+        tp1_exit_price = tp1_res.price
+    locked_R = scale * side * (tp1_exit_price - entry_price) / risk_per_unit
 
     runner_stop_price = tp1_res.stop_after_tp1
 
@@ -483,21 +519,27 @@ def manage_trade_lifecycle(
 
     if runner_label is None:
         runner_idx = len(idx) - 1
-        runner_exit_price = float(bars["close"].iloc[runner_idx])
+        runner_exit_price_raw = float(bars["close"].iloc[runner_idx])
         runner_reason = "no_event"
     else:
         if runner_label == "stop":
-            runner_exit_price = runner_stop_price
+            runner_exit_price_raw = runner_stop_price
             runner_reason = "stop"
         elif runner_label == "tp2":
-            runner_exit_price = float(tp2_res.price) if tp2_res.price else 0.0
+            runner_exit_price_raw = float(tp2_res.price) if tp2_res.price else 0.0
             runner_reason = f"tp2_{tp2_res.label}"
         else:
             assert runner_ts_idx is not None
-            runner_exit_price = float(bars["close"].iloc[int(runner_ts_idx)])
+            runner_exit_price_raw = float(bars["close"].iloc[int(runner_ts_idx)])
 
             runner_reason = runner_ts_reason
 
+    runner_exit_time = idx[int(runner_idx)] if runner_idx is not None else None
+    runner_exit_price = (
+        _apply_exit_slip(runner_exit_price_raw, runner_exit_time)
+        if runner_exit_time is not None
+        else runner_exit_price_raw
+    )
     runner_R = side * (runner_exit_price - entry_price) / risk_per_unit
     total_R = locked_R + (1.0 - scale) * runner_R
 
@@ -517,6 +559,7 @@ def manage_trade_lifecycle(
         "exit_idx": final_idx,
         "exit_time": final_time,
         "exit_price": runner_exit_price,
+        "exit_price_raw": runner_exit_price_raw,
         "realized_R": total_R,
         "tp1_price": tp1_res.price,
         "tp2_price": tp2_res.price if tp2_res.hit else None,

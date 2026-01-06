@@ -34,6 +34,7 @@ class MockCfg:
         },
     )()
     instrument = type("I", (), {"tick_size": 1.0})()
+    slippage = SlippageCfg(normal_ticks=0, hot_ticks=0, tick_size=1.0)
     # Add default management so tests don't produce NaT exits
     management = MgmtCfg()
     time_stop = TimeStopCfg()
