@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
 def _realized_r(trades: pd.DataFrame | None) -> pd.Series:

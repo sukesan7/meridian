@@ -8,12 +8,14 @@ Handles the full lifecycle of an active trade, including:
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Mapping, cast, Any
-from .config import MgmtCfg, TimeStopCfg
+from typing import Any, Mapping, Optional, cast
 
 import numpy as np
 import pandas as pd
+
+from .config import MgmtCfg, TimeStopCfg
 
 
 @dataclass

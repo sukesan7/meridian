@@ -6,11 +6,14 @@ Acts as the single source of truth for all strategy parameters.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any
 from pathlib import Path
-from s3a_backtester.validator import validate_keys
+from typing import Any
+
 import yaml
+
+from s3a_backtester.validator import validate_keys
 
 
 @dataclass

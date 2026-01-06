@@ -9,10 +9,12 @@ Computes core quantitative features for the strategy, including:
 """
 
 from __future__ import annotations
-import pandas as pd
-import numpy as np
+
 from datetime import time
 from typing import Any, cast
+
+import numpy as np
+import pandas as pd
 
 
 def compute_session_refs(df1: pd.DataFrame) -> pd.DataFrame:

@@ -9,26 +9,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import pandas as pd
-
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+
+import pandas as pd
+
 from .config import load_config
-from .data_io import load_minute_df, slice_rth, resample
+from .data_io import load_minute_df, resample, slice_rth
+from .engine import generate_signals, simulate_trades
 from .features import (
+    compute_atr15,
     compute_session_refs,
     compute_session_vwap_bands,
-    compute_atr15,
     find_swings_1m,
 )
-from .structure import trend_5m, micro_swing_break
-from .engine import generate_signals, simulate_trades
 from .metrics import compute_summary
-from .walkforward import rolling_walkforward_frames
 from .monte_carlo import mc_simulate_R
 from .run_meta import build_run_meta, write_run_meta
+from .structure import micro_swing_break, trend_5m
+from .walkforward import rolling_walkforward_frames
 
 
 def _now_run_id() -> str:

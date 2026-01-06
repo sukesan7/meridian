@@ -6,7 +6,7 @@ defined Dataclasses.
 """
 
 from dataclasses import fields, is_dataclass
-from typing import Dict, Type, Any, Set, get_type_hints, cast
+from typing import Any, Dict, Set, Type, cast, get_type_hints
 
 
 def validate_keys(
