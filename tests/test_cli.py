@@ -7,7 +7,10 @@ Coverage:
 - Command: monte-carlo.
 """
 
-from s3a_backtester.cli import cmd_backtest, cmd_walkforward
+import json
+import sys
+
+from s3a_backtester.cli import cmd_backtest, cmd_walkforward, main
 
 
 def test_backtest_cmd(tmp_path, synth_parquet):
@@ -30,3 +33,32 @@ def test_walkforward_cmd(tmp_path, synth_parquet):
         seed=123,
     )
     assert (out / "wf" / "oos_trades.parquet").exists()
+
+
+def test_main_records_argv_and_artifacts(tmp_path, synth_parquet, monkeypatch):
+    out = tmp_path / "out"
+    argv = [
+        "backtest",
+        "--config",
+        "configs/base.yaml",
+        "--data",
+        str(synth_parquet),
+        "--out-dir",
+        str(out),
+        "--run-id",
+        "bt",
+        "--no-write-signals",
+    ]
+    monkeypatch.setattr(sys, "argv", ["meridian"] + argv)
+
+    main(None)
+
+    meta_path = out / "bt" / "run_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    assert meta["argv"] == argv
+    artifacts = meta.get("artifacts")
+    assert artifacts is not None
+    assert "summary.json" in artifacts
+    assert "trades.parquet" in artifacts
+    assert artifacts["summary.json"]["bytes"] > 0

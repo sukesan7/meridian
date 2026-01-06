@@ -10,6 +10,7 @@ import os
 import time
 from pathlib import Path
 from s3a_backtester.run_meta import build_run_meta
+from s3a_backtester.repro import sha256_file
 
 
 def test_run_meta_captures_correct_mtime(tmp_path: Path) -> None:
@@ -64,3 +65,27 @@ def test_dependency_lock_check() -> None:
 
     # It should have the key, even if None
     assert "dependency_lock_sha256" in meta
+
+
+def test_artifact_hashing(tmp_path: Path) -> None:
+    """
+    Ensures artifacts are hashed with size + sha256 for provenance.
+    """
+    art = tmp_path / "artifact.txt"
+    payload = "abc123"
+    art.write_text(payload, encoding="utf-8")
+
+    meta = build_run_meta(
+        cmd="pytest",
+        argv=["--artifact-test"],
+        run_id="artifacts",
+        outputs_dir=tmp_path,
+        artifacts={"artifact.txt": art},
+    )
+
+    artifacts = meta.get("artifacts")
+    assert artifacts is not None
+    assert "artifact.txt" in artifacts
+    info = artifacts["artifact.txt"]
+    assert info["bytes"] == len(payload)
+    assert info["sha256"] == sha256_file(art)
