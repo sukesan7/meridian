@@ -6,16 +6,18 @@ Includes the primary State Machine (Unlock -> Zone -> Trigger) and Trade Builder
 """
 
 from __future__ import annotations
-from typing import Any, Literal, cast
-from datetime import date
-from .config import Config, MgmtCfg, TimeStopCfg
-from .slippage import apply_slippage
-from .management import manage_trade_lifecycle
-from .filters import build_session_filter_mask
-from .time_stop_conditions import build_time_stop_condition_series
 
-import pandas as pd
+from datetime import date
+from typing import Any, Literal, cast
+
 import numpy as np
+import pandas as pd
+
+from .config import Config, MgmtCfg, TimeStopCfg
+from .filters import build_session_filter_mask
+from .management import manage_trade_lifecycle
+from .slippage import apply_slippage
+from .time_stop_conditions import build_time_stop_condition_series
 
 _TRADE_COLS = [
     "date",
@@ -51,8 +53,23 @@ def simulate_trades(
     if signals is None or signals.empty:
         return pd.DataFrame(columns=_TRADE_COLS)
 
-    df = signals.copy()
+    mkt = df1
+    sig = signals
 
+    if not isinstance(mkt.index, pd.DatetimeIndex) or not isinstance(
+        sig.index, pd.DatetimeIndex
+    ):
+        raise TypeError("df1/signals must be indexed by DatetimeIndex")
+    if not mkt.index.is_monotonic_increasing:
+        raise ValueError("df1 index must be strictly increasing")
+    if not mkt.index.equals(sig.index):
+        raise ValueError(
+            "df1 and signals index must match exactly (no filtering/reindexing)"
+        )
+
+    mkt_idx: pd.DatetimeIndex = mkt.index
+
+    df = sig.copy()
     defaults: dict[str, object] = {
         "direction": 0,
         "trigger_ok": False,
@@ -77,7 +94,6 @@ def simulate_trades(
             df[col] = cast(Any, val)
 
     direction = pd.to_numeric(df["direction"], errors="coerce").fillna(0).astype(int)
-
     mask = (
         direction.ne(0)
         & df["trigger_ok"].astype(bool)
@@ -90,7 +106,7 @@ def simulate_trades(
         session_mask = build_session_filter_mask(df, filters_cfg)
         mask &= session_mask
 
-    entries = df[mask].copy()
+    entries = df.loc[mask].copy()
     if entries.empty:
         return pd.DataFrame(columns=_TRADE_COLS)
 
@@ -122,45 +138,62 @@ def simulate_trades(
     tick_size = float(tick_size) if tick_size else 0.25
     use_management = mgmt_cfg is not None and time_cfg is not None
 
+    entry_pos = mkt_idx.get_indexer(cast(pd.DatetimeIndex, entries.index))
+    mkt_len = len(mkt)
+
     records: list[dict[str, object]] = []
     session_cache: dict[date, pd.DataFrame] = {}
 
-    df_len = len(df)
+    feature_cols_needed = (
+        "vwap",
+        "vwap_1u",
+        "vwap_1d",
+        "vwap_2u",
+        "vwap_2d",
+        "trend_5m",
+        "trend_dir_5m",
+        "trend5",
+        "trend_dir",
+        "trend5_dir",
+    )
 
-    for ts, row in entries.iterrows():
-        ts_idx = cast(pd.Timestamp, ts)
+    for (_ts, row), pos in zip(entries.iterrows(), entry_pos):
+        pos_i = int(pos)
+        if pos_i < 0:
+            continue
+
+        ts_idx: pd.Timestamp = mkt_idx[pos_i]
 
         dir_val = int(row["direction"])
         if dir_val == 0:
             continue
 
-        raw_price = float(row["close"])
-
-        if fill_mode == "next_open":
-            try:
-                curr_loc = df.index.get_loc(ts)
-                if isinstance(curr_loc, slice) or isinstance(curr_loc, np.ndarray):
-                    curr_loc = (
-                        curr_loc.stop - 1
-                        if isinstance(curr_loc, slice)
-                        else curr_loc[-1]
-                    )
-
-                next_loc = curr_loc + 1
-                if next_loc < df_len:
-                    raw_price = float(df["open"].iloc[next_loc])
-                    fill_ts = df.index[next_loc]
-                else:
-                    raw_price = float(row["close"])
-                    fill_ts = ts_idx
-            except KeyError:
-                raw_price = float(row["close"])
-                fill_ts = ts_idx
-        else:
-            fill_ts = ts_idx
-
         side_lit: Literal["long", "short"] = "long" if dir_val > 0 else "short"
         side_sign = 1 if dir_val > 0 else -1
+
+        raw_price: float
+        fill_ts: pd.Timestamp = ts_idx
+
+        if fill_mode == "next_open":
+            next_pos = pos_i + 1
+            if "open" in mkt.columns and next_pos < mkt_len:
+                raw_price = float(mkt["open"].iloc[next_pos])
+                fill_ts = mkt_idx[next_pos]
+            else:
+                if "close" in mkt.columns:
+                    raw_price = float(mkt["close"].iloc[pos_i])
+                else:
+                    raw_price = float(row.get("close", np.nan))
+                fill_ts = ts_idx
+        else:
+            if "close" in mkt.columns:
+                raw_price = float(mkt["close"].iloc[pos_i])
+            else:
+                raw_price = float(row.get("close", np.nan))
+            fill_ts = ts_idx
+
+        if not np.isfinite(raw_price):
+            continue
 
         stop = float(row["stop_price"]) if pd.notna(row["stop_price"]) else np.nan
         if not np.isfinite(stop):
@@ -169,22 +202,23 @@ def simulate_trades(
         entry_price = apply_slippage(side_lit, fill_ts, raw_price, cfg)
 
         risk_per_unit = abs(entry_price - stop)
-        if risk_per_unit <= 0:
+        if risk_per_unit <= 0 or not np.isfinite(risk_per_unit):
             continue
 
         or_high = float(row.get("or_high", np.nan))
         or_low = float(row.get("or_low", np.nan))
         or_height = (
-            or_high - or_low if np.isfinite(or_high) and np.isfinite(or_low) else np.nan
+            (or_high - or_low)
+            if np.isfinite(or_high) and np.isfinite(or_low)
+            else np.nan
         )
 
         if np.isfinite(or_height) and or_height > 0:
-            risk_cap = or_height * max_risk_mult
+            risk_cap = float(or_height) * float(max_risk_mult)
             if risk_per_unit > risk_cap:
                 continue
 
         risk_R = 1.0
-
         sl_ticks = risk_per_unit / tick_size if tick_size > 0 else np.nan
 
         slip_ticks = 0.0
@@ -210,17 +244,22 @@ def simulate_trades(
         v1d = float(row.get("vwap_1d", np.nan))
         location = "none"
         if np.isfinite(vwap):
-            price = float(row["close"])
-            if dir_val > 0:
-                if np.isfinite(v1u) and vwap <= price <= v1u:
-                    location = (
-                        "vwap" if abs(price - vwap) <= abs(price - v1u) else "+1sigma"
-                    )
-            else:
-                if np.isfinite(v1d) and v1d <= price <= vwap:
-                    location = (
-                        "vwap" if abs(price - vwap) <= abs(price - v1d) else "-1sigma"
-                    )
+            price = float(row.get("close", np.nan))
+            if np.isfinite(price):
+                if dir_val > 0:
+                    if np.isfinite(v1u) and vwap <= price <= v1u:
+                        location = (
+                            "vwap"
+                            if abs(price - vwap) <= abs(price - v1u)
+                            else "+1sigma"
+                        )
+                else:
+                    if np.isfinite(v1d) and v1d <= price <= vwap:
+                        location = (
+                            "vwap"
+                            if abs(price - vwap) <= abs(price - v1d)
+                            else "-1sigma"
+                        )
 
         exit_time = pd.NaT
         realized_R = 0.0
@@ -228,37 +267,41 @@ def simulate_trades(
         tp2_price = entry_price + side_sign * risk_per_unit * 2.0
         t_to_tp1_min = np.nan
         time_stop_reason = "none"
+
         entry_time = fill_ts
         trade_date = entry_time.date()
 
         if use_management and mgmt_cfg and time_cfg:
             if trade_date not in session_cache:
-                idx_all = cast(pd.DatetimeIndex, df.index)
+                idx_all = mkt_idx
                 mask_session = idx_all.date == trade_date
-                session_cache[trade_date] = df.loc[mask_session]
+
+                session_df = mkt.loc[mask_session].copy()
+
+                for c in feature_cols_needed:
+                    if c not in session_df.columns and c in sig.columns:
+                        session_df[c] = sig.loc[mask_session, c]
+
+                session_cache[trade_date] = session_df
 
             session_df = session_cache[trade_date]
-            try:
-                entry_idx = session_df.index.get_loc(entry_time)
-            except KeyError:
-                entry_idx = 0
 
-            if isinstance(entry_idx, slice) or isinstance(entry_idx, np.ndarray):
-                entry_idx = (
-                    entry_idx.start if isinstance(entry_idx, slice) else entry_idx[0]
-                )
+            entry_idx_arr = session_df.index.get_indexer(pd.DatetimeIndex([entry_time]))
+            entry_idx = int(entry_idx_arr[0]) if len(entry_idx_arr) else -1
+            if entry_idx < 0:
+                continue
 
             pdh = float(row.get("pdh", np.nan))
             pdl = float(row.get("pdl", np.nan))
             refs = {
                 "pdh": pdh if np.isfinite(pdh) else 0.0,
                 "pdl": pdl if np.isfinite(pdl) else 0.0,
-                "or_height": or_height if np.isfinite(or_height) else 0.0,
+                "or_height": float(or_height) if np.isfinite(or_height) else 0.0,
             }
 
             conds = build_time_stop_condition_series(
                 session_df=session_df,
-                entry_idx=int(entry_idx),
+                entry_idx=entry_idx,
                 side_sign=side_sign,
                 entry_price=float(entry_price),
                 stop_price=float(stop),
@@ -266,7 +309,7 @@ def simulate_trades(
 
             lifecycle = manage_trade_lifecycle(
                 bars=session_df,
-                entry_idx=int(entry_idx),
+                entry_idx=entry_idx,
                 side=side_sign,
                 entry_price=float(entry_price),
                 stop_price=float(stop),
@@ -297,7 +340,7 @@ def simulate_trades(
         records.append(
             {
                 "date": trade_date,
-                "signal_time": ts,
+                "signal_time": ts_idx,
                 "entry_time": entry_time,
                 "exit_time": exit_time,
                 "side": side_lit,
@@ -323,13 +366,11 @@ def simulate_trades(
         return pd.DataFrame(columns=_TRADE_COLS)
 
     trades = pd.DataFrame.from_records(records)
-
     for col in _TRADE_COLS:
         if col not in trades:
             trades[col] = np.nan
 
-    trades = trades[_TRADE_COLS]
-    return trades
+    return trades[_TRADE_COLS]
 
 
 def generate_signals(
@@ -339,7 +380,6 @@ def generate_signals(
 ) -> pd.DataFrame:
     """
     Computes all signal columns (Unlock, Zone, Trigger) in a vectorized manner.
-    Now uses STRICTLY CONFIRMED swings for stop placement.
     """
     out = df_1m.copy()
 

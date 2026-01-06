@@ -8,10 +8,14 @@ Coverage:
 - Filtering (Risk Cap, Session Filters).
 """
 
-import pandas as pd
 from unittest.mock import MagicMock
+
+import pandas as pd
+import pytest
+
+import s3a_backtester.engine as eng
+from s3a_backtester.config import Config, EntryWindow, RiskCfg, SlippageCfg
 from s3a_backtester.engine import generate_signals, simulate_trades
-from s3a_backtester.config import Config, SlippageCfg, RiskCfg, EntryWindow
 
 
 def test_simulate_valid_long_trade() -> None:
@@ -318,3 +322,172 @@ def test_engine_accepts_valid_risk_at_fill():
     trades = simulate_trades(signals, signals, cfg_mock)
 
     assert len(trades) == 1, "Trade should be accepted when risk is within limits."
+
+
+def test_next_open_uses_market_df_not_signals_df() -> None:
+    dates = pd.date_range("2024-01-01 09:30", periods=3, freq="1min")
+
+    df1 = pd.DataFrame(
+        {
+            "open": [100.0, 105.0, 110.0],
+            "high": [100.0, 105.0, 110.0],
+            "low": [100.0, 105.0, 110.0],
+            "close": [100.0, 105.0, 110.0],
+            "volume": [100, 100, 100],
+            # Make OR height large so risk cap won't reject
+            "or_high": [140.0, 140.0, 140.0],
+            "or_low": [100.0, 100.0, 100.0],
+        },
+        index=dates,
+    )
+
+    signals = df1.copy()
+    signals["open"] = [100.0, 999.0, 999.0]  # poison signals OHLC
+    signals["direction"] = 0
+    signals.loc[dates[0], "direction"] = 1
+    signals["trigger_ok"] = True
+    signals["time_window_ok"] = True
+    signals["disqualified_2sigma"] = False
+    signals["stop_price"] = 90.0
+
+    # Ensure slippage doesn't move the entry
+    cfg = Config(
+        slippage=SlippageCfg(
+            mode="next_open", normal_ticks=0, hot_ticks=0, tick_size=0.25
+        )
+    )
+
+    trades = simulate_trades(df1, signals, cfg)
+
+    assert len(trades) == 1
+    assert trades.iloc[0]["entry"] == 105.0
+
+
+def test_simulate_trades_rejects_index_mismatch() -> None:
+    """
+    Contract test: df1 and signals must be aligned (same timestamps).
+    If they diverge, simulate_trades must fail fast.
+    """
+    idx1 = pd.date_range("2024-01-01 09:30", periods=3, freq="1min")
+    idx2 = pd.date_range("2024-01-01 09:31", periods=3, freq="1min")  # shifted
+
+    df1 = pd.DataFrame(
+        {
+            "open": [100, 101, 102],
+            "high": [100, 101, 102],
+            "low": [100, 101, 102],
+            "close": [100, 101, 102],
+        },
+        index=idx1,
+    )
+    signals = pd.DataFrame(
+        {
+            "direction": [1, 0, 0],
+            "trigger_ok": [True, False, False],
+            "time_window_ok": [True, True, True],
+            "disqualified_2sigma": [False, False, False],
+            "stop_price": [90.0, 90.0, 90.0],
+        },
+        index=idx2,
+    )
+
+    cfg = Config(slippage=SlippageCfg(mode="next_open", tick_size=0.0))
+
+    with pytest.raises(ValueError):
+        simulate_trades(df1, signals, cfg)
+
+
+def test_lifecycle_bars_source_market_not_signals(monkeypatch) -> None:
+    """
+    Regression: When management is enabled, the bars passed to manage_trade_lifecycle
+    must be sourced from df1 (market tape), not from signals.
+
+    We monkeypatch manage_trade_lifecycle to assert the OHLC it receives equals df1.
+    """
+    dates = pd.date_range("2024-01-01 09:30", periods=2, freq="1min")
+
+    df1 = pd.DataFrame(
+        {
+            "open": [100.0, 101.0],
+            "high": [100.0, 101.0],
+            "low": [100.0, 101.0],
+            "close": [100.0, 101.0],
+            "volume": [100, 100],
+            "or_high": [101.0, 101.0],
+            "or_low": [99.0, 99.0],
+        },
+        index=dates,
+    )
+
+    # Poison signals OHLC
+    signals = df1.copy()
+    signals["open"] = [0.0, 0.0]
+    signals["high"] = [0.0, 0.0]
+    signals["low"] = [0.0, 0.0]
+    signals["close"] = [0.0, 0.0]
+
+    # Minimal signal fields
+    signals["direction"] = [1, 0]
+    signals["trigger_ok"] = [True, False]
+    signals["time_window_ok"] = [True, True]
+    signals["disqualified_2sigma"] = [False, False]
+    signals["stop_price"] = [99.0, 99.0]
+    signals["vwap"] = [100.0, 100.0]
+    signals["vwap_1u"] = [101.0, 101.0]
+    signals["vwap_1d"] = [99.0, 99.0]
+
+    # Force management path without depending on your real mgmt/time_stop cfg classes
+    cfg = MagicMock()
+    cfg.slippage.mode = "next_open"
+    cfg.instrument.tick_size = 0.25
+    cfg.risk.max_stop_or_mult = 10.0
+    cfg.management = object()  # non-None
+    cfg.time_stop = object()  # non-None
+
+    class DummyConds:
+        vwap_side_ok = True
+        trend_ok = True
+        sigma_ok = True
+        dd_ok = True
+
+    def stub_build_time_stop_condition_series(**kwargs):
+        return DummyConds()
+
+    def stub_manage_trade_lifecycle(
+        *,
+        bars,
+        entry_idx,
+        side,
+        entry_price,
+        stop_price,
+        mgmt_cfg,
+        time_cfg,
+        refs,
+        vwap_side_ok,
+        trend_ok,
+        sigma_ok,
+        dd_ok,
+    ):
+        # ASSERT: OHLC comes from df1, not signals
+        assert float(bars["open"].iloc[0]) == 100.0
+        assert float(bars["open"].iloc[1]) == 101.0
+        assert float(bars["close"].iloc[0]) == 100.0
+        assert float(bars["close"].iloc[1]) == 101.0
+
+        return {
+            "exit_time": bars.index[entry_idx],
+            "realized_R": 0.0,
+            "tp1_price": float(entry_price),
+            "tp2_price": float(entry_price),
+            "t_to_tp1_min": None,
+            "time_stop_reason": "none",
+        }
+
+    # Patch in the engine module (simulate_trades uses these imported symbols)
+    monkeypatch.setattr(
+        eng, "build_time_stop_condition_series", stub_build_time_stop_condition_series
+    )
+    monkeypatch.setattr(eng, "manage_trade_lifecycle", stub_manage_trade_lifecycle)
+
+    trades = eng.simulate_trades(df1, signals, cfg)
+    assert len(trades) == 1

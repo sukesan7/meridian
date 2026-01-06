@@ -9,6 +9,7 @@ Coverage:
 """
 
 import pandas as pd
+
 from s3a_backtester.engine import generate_signals
 
 
@@ -188,3 +189,21 @@ def test_signals_do_not_prefilter_risk():
     assert signals.iloc[0]["trigger_ok"], (
         "generate_signals should not filter based on risk; that is the engine's job."
     )
+
+
+def test_trigger_does_not_peek_forward_for_pattern():
+    """
+    Regression: trigger_ok at time T must not become True because a pattern appears at T+1.
+    """
+    vals = [105.0] * 5 + [111.0, 108.0, 109.0, 109.0]  # unlock at 5, zone at 6
+    df = _make_df(vals)
+
+    # Put the pattern at a later bar (T+1), not at the candidate trigger bar.
+    df.loc[df.index[8], "micro_break_dir"] = 1
+
+    out = generate_signals(df, cfg=MockWindowCfg)
+
+    # Ensure bar 7 didn't fire early due to a future pattern at bar 8
+    assert not out["trigger_ok"].iloc[7]
+    # And bar 8 can fire normally (allowed) if other gates are satisfied
+    assert out["trigger_ok"].iloc[8]
