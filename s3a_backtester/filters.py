@@ -10,6 +10,7 @@ Determines if a trading day should be skipped entirely based on:
 from __future__ import annotations
 
 from typing import Any
+
 import numpy as np
 import pandas as pd
 

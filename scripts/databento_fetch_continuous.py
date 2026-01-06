@@ -20,9 +20,11 @@ Arguments:
 """
 
 from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path
+
 import databento as db
 import pandas as pd
 

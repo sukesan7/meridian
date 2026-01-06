@@ -9,6 +9,7 @@ Coverage:
 """
 
 import pandas as pd
+
 from s3a_backtester.engine import generate_signals
 
 
@@ -188,3 +189,56 @@ def test_signals_do_not_prefilter_risk():
     assert signals.iloc[0]["trigger_ok"], (
         "generate_signals should not filter based on risk; that is the engine's job."
     )
+
+
+def test_trigger_does_not_peek_forward_for_pattern():
+    """
+    Regression: trigger_ok at time T must not become True because a pattern appears at T+1.
+    """
+    vals = [105.0] * 5 + [111.0, 108.0, 109.0, 109.0]  # unlock at 5, zone at 6
+    df = _make_df(vals)
+
+    # Put the pattern at a later bar (T+1), not at the candidate trigger bar.
+    df.loc[df.index[8], "micro_break_dir"] = 1
+
+    out = generate_signals(df, cfg=MockWindowCfg)
+
+    # Ensure bar 7 didn't fire early due to a future pattern at bar 8
+    assert not out["trigger_ok"].iloc[7]
+    # And bar 8 can fire normally (allowed) if other gates are satisfied
+    assert out["trigger_ok"].iloc[8]
+
+
+def test_trend_5m_shift_prevents_lookahead():
+    idx = pd.date_range(
+        "2024-01-02 09:30", periods=10, freq="1min", tz="America/New_York"
+    )
+    df1 = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 100.0,
+            "low": 100.0,
+            "close": 100.0,
+            "volume": 100,
+            "or_high": 110.0,
+            "or_low": 90.0,
+            "vwap": 100.0,
+            "vwap_1u": 105.0,
+            "vwap_1d": 95.0,
+            "vwap_2u": 110.0,
+            "vwap_2d": 90.0,
+        },
+        index=idx,
+    )
+
+    df5_idx = pd.date_range(
+        "2024-01-02 09:30", periods=2, freq="5min", tz="America/New_York"
+    )
+    df5 = pd.DataFrame({"trend_5m": [1, -1]}, index=df5_idx)
+
+    out = generate_signals(df1, df5, cfg=None)
+
+    # 09:30-09:34 should not see the 09:30-09:34 bar's trend yet.
+    assert (out.loc[idx[:5], "trend_5m"] == 0).all()
+    # 09:35-09:39 should see the completed 09:30-09:34 bar trend.
+    assert (out.loc[idx[5:], "trend_5m"] == 1).all()

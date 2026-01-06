@@ -6,11 +6,14 @@ Acts as the single source of truth for all strategy parameters.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any
 from pathlib import Path
-from s3a_backtester.validator import validate_keys
+from typing import Any
+
 import yaml
+
+from s3a_backtester.validator import validate_keys
 
 
 @dataclass
@@ -58,7 +61,9 @@ class FiltersCfg:
     skip_tiny_or: bool = True
     tiny_or_mult: float = 0.25
     low_atr_percentile: float = 20.0
+    enable_low_atr: bool = True
     news_blackout: bool = False
+    enable_dom_filter: bool = True
 
 
 @dataclass

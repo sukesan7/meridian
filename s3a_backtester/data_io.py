@@ -6,11 +6,13 @@ Supports CSV/Parquet formats, timezone localization, and strict RTH slicing.
 """
 
 from __future__ import annotations
-from typing import cast, Any
-from pandas.api.types import DatetimeTZDtype
-from datetime import time
-import pandas as pd
+
 import logging
+from datetime import time
+from typing import Any, cast
+
+import pandas as pd
+from pandas.api.types import DatetimeTZDtype
 
 REQ_COLS = ("open", "high", "low", "close", "volume")
 
@@ -122,7 +124,7 @@ def slice_rth(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
-    """Resamples 1-minute data to higher timeframes with 'right' labeling."""
+    """Resamples 1-minute data to higher timeframes with 'left' labeling."""
     agg = {
         "open": "first",
         "high": "max",
@@ -130,8 +132,11 @@ def resample(df1: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
         "close": "last",
         "volume": "sum",
     }
+
+    valid_agg = {k: v for k, v in agg.items() if k in df1.columns}
+
     return (
-        df1.resample(rule, label="right", closed="right")
-        .agg(cast(Any, agg))
+        df1.resample(rule, label="left", closed="left")
+        .agg(cast(Any, valid_agg))
         .dropna(how="all")
     )

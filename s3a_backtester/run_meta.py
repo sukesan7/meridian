@@ -1,7 +1,7 @@
 """
 Run Metadata
 ------------
-Captures and writes execution details (Git SHA, Config Hash, CLI args)
+Captures and writes execution details (Git SHA, Config Hash, CLI args, artifact hashes)
 to ensure backtest provenance and reproducibility.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from s3a_backtester.repro import (
     dataclass_to_dict,
@@ -24,21 +24,30 @@ from s3a_backtester.repro import (
 )
 
 
+def _artifact_info(path: Path) -> Dict[str, Any]:
+    """Return size and SHA256 for a completed artifact."""
+    stat = path.stat()
+    return {"bytes": stat.st_size, "sha256": sha256_file(path)}
+
+
 def get_dependency_lock_hash() -> Optional[str]:
     """
-    Attempts to locate and hash the 'requirements.lock' file.
-    Assumes the lockfile is in the project root.
+    Attempts to locate and hash a dependency lockfile.
+    Prefers CI lockfiles when present.
     """
     try:
-        lock_path = Path("requirements.lock")
-        if lock_path.exists() and lock_path.is_file():
-            return sha256_file(lock_path)
-
-        lock_path_alt = (
-            Path(__file__).resolve().parent.parent.parent.parent / "requirements.lock"
-        )
-        if lock_path_alt.exists() and lock_path_alt.is_file():
-            return sha256_file(lock_path_alt)
+        root = Path(__file__).resolve().parent.parent
+        candidates = [
+            Path("requirements-ci.lock"),
+            Path("requirements.lock"),
+            Path("requirements-dev.lock"),
+            root / "requirements-ci.lock",
+            root / "requirements.lock",
+            root / "requirements-dev.lock",
+        ]
+        for lock_path in candidates:
+            if lock_path.exists() and lock_path.is_file():
+                return sha256_file(lock_path)
 
     except Exception:
         pass
@@ -56,6 +65,7 @@ def build_run_meta(
     data_path: Optional[str] = None,
     seed: Optional[int] = None,
     hash_data: bool = False,
+    artifacts: Optional[Mapping[str, str | Path]] = None,
 ) -> Dict[str, Any]:
     """Constructs a metadata dictionary for the current execution context."""
     out_dir = Path(outputs_dir)
@@ -97,6 +107,15 @@ def build_run_meta(
 
         if hash_data:
             meta["data_sha256"] = sha256_file(data_path)
+
+    if artifacts:
+        artifact_meta: Dict[str, Dict[str, Any]] = {}
+        for name in sorted(artifacts):
+            p = Path(artifacts[name])
+            if not p.exists():
+                raise FileNotFoundError(f"Artifact not found: {p}")
+            artifact_meta[str(name)] = _artifact_info(p)
+        meta["artifacts"] = artifact_meta
 
     return meta
 

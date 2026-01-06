@@ -9,26 +9,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import pandas as pd
-
+import sys
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+
+import pandas as pd
+
 from .config import load_config
-from .data_io import load_minute_df, slice_rth, resample
+from .data_io import load_minute_df, resample, slice_rth
+from .engine import generate_signals, simulate_trades
 from .features import (
+    compute_atr15,
     compute_session_refs,
     compute_session_vwap_bands,
-    compute_atr15,
     find_swings_1m,
 )
-from .structure import trend_5m, micro_swing_break
-from .engine import generate_signals, simulate_trades
 from .metrics import compute_summary
-from .walkforward import rolling_walkforward_frames
 from .monte_carlo import mc_simulate_R
 from .run_meta import build_run_meta, write_run_meta
+from .structure import micro_swing_break, trend_5m
+from .walkforward import rolling_walkforward_frames
 
 
 def _now_run_id() -> str:
@@ -48,7 +50,7 @@ def _write_json(path: Path, obj: Any) -> None:
             return dict(x.__dict__)
         return str(x)
 
-    path.write_text(json.dumps(obj, indent=2, default=_default))
+    path.write_text(json.dumps(obj, indent=2, default=_default), encoding="utf-8")
 
 
 def _print_compact_json(obj: Any) -> None:
@@ -174,6 +176,7 @@ def build_feature_frames(
     else:
         trend_series = tr5
 
+    trend_series = trend_series.shift(1)
     df1["trend_5m"] = trend_series.reindex(df1.index, method="ffill").fillna(0)
 
     swings_1m = find_swings_1m(df1)
@@ -207,7 +210,7 @@ def cmd_backtest(
     write_signals: bool = True,
     write_trades: bool = True,
     seed: int | None = None,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes a single standard backtest run."""
@@ -226,7 +229,24 @@ def cmd_backtest(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
-    _write_json(root / "summary.json", summary)
+    artifacts: dict[str, Path] = {}
+
+    summary_path = root / "summary.json"
+    _write_json(summary_path, summary)
+    artifacts["summary.json"] = summary_path
+
+    if write_signals:
+        signals_path = root / "signals.parquet"
+        signals.to_parquet(signals_path, index=True)
+        artifacts["signals.parquet"] = signals_path
+
+    if write_trades:
+        trades_parquet_path = root / "trades.parquet"
+        trades_csv_path = root / "trades.csv"
+        trades.to_parquet(trades_parquet_path, index=False)
+        trades.to_csv(trades_csv_path, index=False)
+        artifacts["trades.parquet"] = trades_parquet_path
+        artifacts["trades.csv"] = trades_csv_path
 
     meta = build_run_meta(
         cmd="backtest",
@@ -238,6 +258,7 @@ def cmd_backtest(
         data_path=data_path,
         seed=seed,
         hash_data=hash_data,
+        artifacts=artifacts,
     )
     meta.update(
         {
@@ -249,13 +270,6 @@ def cmd_backtest(
         }
     )
     write_run_meta(root, meta)
-
-    if write_signals:
-        signals.to_parquet(root / "signals.parquet", index=True)
-
-    if write_trades:
-        trades.to_parquet(root / "trades.parquet", index=False)
-        trades.to_csv(root / "trades.csv", index=False)
 
     _print_compact_json({"run_id": run_id, "artifacts_dir": str(root), **summary})
 
@@ -274,7 +288,7 @@ def cmd_walkforward(
     write_trades: bool = True,
     write_equity: bool = True,
     seed: int | None = None,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes rolling walk-forward analysis (IS/OOS)."""
@@ -320,7 +334,31 @@ def cmd_walkforward(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
-    _write_json(root / "summary.json", overall_oos)
+    artifacts: dict[str, Path] = {}
+
+    summary_path = root / "summary.json"
+    _write_json(summary_path, overall_oos)
+    artifacts["summary.json"] = summary_path
+
+    is_summary_path = root / "is_summary.csv"
+    oos_summary_path = root / "oos_summary.csv"
+    is_summary.to_csv(is_summary_path, index=False)
+    oos_summary.to_csv(oos_summary_path, index=False)
+    artifacts["is_summary.csv"] = is_summary_path
+    artifacts["oos_summary.csv"] = oos_summary_path
+
+    if write_equity:
+        wf_equity_path = root / "wf_equity.parquet"
+        wf_equity.to_parquet(wf_equity_path, index=False)
+        artifacts["wf_equity.parquet"] = wf_equity_path
+
+    if write_trades:
+        is_trades_path = root / "is_trades.parquet"
+        oos_trades_path = root / "oos_trades.parquet"
+        is_trades.to_parquet(is_trades_path, index=False)
+        oos_trades.to_parquet(oos_trades_path, index=False)
+        artifacts["is_trades.parquet"] = is_trades_path
+        artifacts["oos_trades.parquet"] = oos_trades_path
 
     meta = build_run_meta(
         cmd="walkforward",
@@ -332,6 +370,7 @@ def cmd_walkforward(
         data_path=data_path,
         seed=seed,
         hash_data=hash_data,
+        artifacts=artifacts,
     )
     meta.update(
         {
@@ -345,16 +384,6 @@ def cmd_walkforward(
         }
     )
     write_run_meta(root, meta)
-
-    is_summary.to_csv(root / "is_summary.csv", index=False)
-    oos_summary.to_csv(root / "oos_summary.csv", index=False)
-
-    if write_equity:
-        wf_equity.to_parquet(root / "wf_equity.parquet", index=False)
-
-    if write_trades:
-        is_trades.to_parquet(root / "is_trades.parquet", index=False)
-        oos_trades.to_parquet(root / "oos_trades.parquet", index=False)
 
     _print_compact_json({"run_id": run_id, "artifacts_dir": str(root), **overall_oos})
 
@@ -371,7 +400,7 @@ def cmd_mc(
     seed: int | None = None,
     years: float | None = None,
     keep_equity_paths: bool = False,
-    hash_data: bool = False,
+    hash_data: bool = True,
     argv: list[str] | None = None,
 ) -> None:
     """Executes Monte Carlo simulation on an existing trades file."""
@@ -399,7 +428,23 @@ def cmd_mc(
     root = Path(out_dir) / run_id
     _safe_mkdir(root)
 
-    _write_json(root / "summary.json", summary)
+    artifacts: dict[str, Path] = {}
+
+    summary_path = root / "summary.json"
+    _write_json(summary_path, summary)
+    artifacts["summary.json"] = summary_path
+
+    samples_parquet_path = root / "mc_samples.parquet"
+    samples_csv_path = root / "mc_samples.csv"
+    samples.to_parquet(samples_parquet_path, index=False)
+    samples.to_csv(samples_csv_path, index=False)
+    artifacts["mc_samples.parquet"] = samples_parquet_path
+    artifacts["mc_samples.csv"] = samples_csv_path
+
+    if equity_paths is not None:
+        equity_paths_path = root / "mc_equity_paths.parquet"
+        equity_paths.to_parquet(equity_paths_path, index=False)
+        artifacts["mc_equity_paths.parquet"] = equity_paths_path
 
     meta = build_run_meta(
         cmd="monte-carlo",
@@ -411,6 +456,7 @@ def cmd_mc(
         data_path=trades_path,
         seed=seed,
         hash_data=hash_data,
+        artifacts=artifacts,
     )
     meta.update(
         {
@@ -423,12 +469,6 @@ def cmd_mc(
         }
     )
     write_run_meta(root, meta)
-
-    samples.to_parquet(root / "mc_samples.parquet", index=False)
-    samples.to_csv(root / "mc_samples.csv", index=False)
-
-    if equity_paths is not None:
-        equity_paths.to_parquet(root / "mc_equity_paths.parquet", index=False)
 
     _print_compact_json({"run_id": run_id, "artifacts_dir": str(root), **summary})
 
@@ -462,7 +502,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_bt.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
 
@@ -490,7 +531,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_bt_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
 
@@ -513,7 +555,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_wf.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
     p_wf.add_argument(
@@ -541,7 +584,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_wf_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of data file (can be slow for large files).",
     )
     p_wf_old.add_argument(
@@ -554,7 +598,7 @@ def main(argv: list[str] | None = None) -> None:
     # ---------------- monte-carlo ----------------
     p_mc = sub.add_parser("monte-carlo", help="Run Monte Carlo on a trades file")
     p_mc.add_argument("--config", required=True)
-    p_mc.add_argument("--trades-file", required=True)
+    p_mc.add_argument("--trades-file", "--trades", dest="trades_file", required=True)
     p_mc.add_argument("--out-dir", default="outputs/monte-carlo")
     p_mc.add_argument("--run-id", default=None)
     p_mc.add_argument("--n-paths", type=int, default=1000)
@@ -569,7 +613,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_mc.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of trades file (can be slow).",
     )
     p_mc.add_argument(
@@ -593,7 +638,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_mc_old.add_argument(
         "--hash-data",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Compute SHA256 of trades file (can be slow).",
     )
     p_mc_old.add_argument(
@@ -602,7 +648,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = p.parse_args(argv)
 
-    argv_list = list(argv) if argv is not None else []
+    argv_list = list(argv) if argv is not None else sys.argv[1:]
 
     if args.cmd in ("backtest", "run-backtest"):
         cmd_backtest(
@@ -641,10 +687,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd in ("monte-carlo", "run-mc"):
-        # Explicit check for trades_file presence before passing
         trades_file_arg = getattr(args, "trades_file", None)
         if not isinstance(trades_file_arg, str):
-            # This path should be blocked by argparse required=True, but satisfies mypy
             raise ValueError("trades_file is required")
 
         cmd_mc(
