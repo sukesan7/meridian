@@ -13,14 +13,14 @@ Output:
   - docs/system/STRATEGY_RESULTS.md (default)
 
 Example:
-  python scripts/make_report.py ^
-    --label v1_0_5_baseline ^
-    --backtest outputs/backtests/v1_0_5_baseline/v1_0_5_backtest ^
-    --walkforward outputs/walkforward/v1_0_5_baseline/v1_0_5_wfo ^
-    --monte-carlo outputs/monte-carlo/v1_0_5_baseline/v1_0_5_mc ^
-    --profile outputs/profiles/v1_0_5_baseline/backtest.timing.json ^
-    --profile outputs/profiles/v1_0_5_baseline/walkforward.timing.json ^
-    --profile outputs/profiles/v1_0_5_baseline/monte_carlo.timing.json ^
+  python scripts/make_report.py
+    --label v1_0_6_baseline
+    --backtest outputs/backtest/v1_0_6_backtest_baseline
+    --walkforward outputs/walkforward/v1_0_6_walkforward_baseline
+    --monte-carlo outputs/monte-carlo/v1_0_6_montecarlo_baseline
+    --profile outputs/profiles/v1_0_6_baseline/backtest.timing.json
+    --profile outputs/profiles/v1_0_6_baseline/walkforward.timing.json
+    --profile outputs/profiles/v1_0_6_baseline/monte_carlo.timing.json
     --out docs/system/STRATEGY_RESULTS.md
 """
 

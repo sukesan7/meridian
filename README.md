@@ -6,108 +6,85 @@
 [![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type Checked: Mypy](https://img.shields.io/badge/type_checked-mypy-blue.svg)](https://mypy-lang.org/)
 
-**Meridian** is a deterministic, event-driven backtesting engine created for the high-fidelity simulation of intraday futures strategies. It prioritizes correctness, causal integrity, and reproducibility over raw execution speed, serving as a rapid prototyping environment for **Strategy 3A** (VWAP Trend Pullback) logic.
+**Meridian** is a deterministic, event-driven backtesting engine for high-fidelity simulation of intraday futures strategies.
+It is built to minimize the “backtest ↔ reality gap” by enforcing:
 
-The system is currently deployed to validate a singular strategy (**Strategy 3A**) on **Nasdaq-100 (NQ)** futures data, enforcing strict session boundaries and regime-adaptive execution models.
+- **Causal feature generation** (no session leakage / no look-ahead)
+- **Execution realism** (next-bar-open fills, slippage, fill-time risk constraints)
+- **Reproducibility** (config snapshots + seed + immutable run artifacts)
+
+Meridian is currently used to research **Strategy 3A (VWAP Trend Pullback)** on **Nasdaq-100 (NQ)** futures data, but the engine is designed to be reusable across strategies.
 
 ---
 
-## 1. Core Philosophy & Architecture
-
-Meridian addresses the "Backtest-Reality Gap" prevalent in quantitative research by enforcing a strict **Data Contract** and **State Machine** execution model.
+## 1. Core Philosophy
 
 ### Key Engineering Principles
-* **Semantic Determinism:** Identical inputs (Data, Config, Seed) guarantee identical PnL and trade artifacts. This is enforced via a **Regression Gate** in CI, which verifies strict output stability and reproducibility across simulation runs.
-* **Causal Integrity & Latency Simulation:** The engine adheres to strict causality in both signal generation and execution. It enforces `n-bar` delays on indicators and simulates execution latency by filling orders at the Next Bar Open, eliminating the "optimistic fill" bias common in close-on-close backtesters.
-* **Session-Aware Execution:** Native handling of exchange timezones (`America/New_York`) and RTH (09:30–16:00 ET) boundaries prevents signal leakage across trading sessions.
-* **Regime-Adaptive Friction:** Slippage models are time-variant, applying higher friction during high-volatility windows (e.g., the "Hot Window" during the 09:30 Opening Range).
+- **Semantic determinism:** identical inputs (data + config + seed) produce identical outputs (signals/trades/summary).
+- **Causal integrity:** signals are generated from information available *at or before* the decision timestamp; executions are filled using *future* bars only via a controlled latency model (e.g., next-bar-open).
+- **Session awareness:** strict RTH slicing (09:30–16:00 ET) and timezone normalization to prevent cross-session leakage.
+- **Auditable artifacts:** every run writes an artifact bundle that can be diffed, hashed, and reviewed.
 
 ### Data Flow Pipeline
-The engine operates as a unidirectional pipeline, transforming raw vendor data into auditable trade artifacts.
 
 ```mermaid
 graph LR
     A[Raw Parquet] --> B(Feature Engine)
-    B --> C{State Machine}
-    C -->|Events| D[Execution Simulator]
-    D -->|Fills| E[Trade Artifacts]
-    E --> F[Performance Analytics]
+    B --> C{Signal Model / FSM}
+    C -->|Signals| D[Execution Simulator]
+    D -->|Trades| E[Trade Artifacts]
+    E --> F[Metrics + Reports]
 ```
 
 ---
 
 ## 2. Strategy Logic (Strategy 3A)
 
-The engine implements a multi-stage finite state machine (FSM) to identify high-probability setups. Unlike simple vector crossovers, **Strategy 3A** requires a specific sequence of market states:
+Strategy 3A is implemented as a multi-stage finite state machine (FSM) with explicit gating stages:
 
-1.  **Unlock Phase:** The system monitors for a volatility expansion (Opening Range Breakout) aligned with the 5-minute trend structure.
-2.  **Zone Phase:** Once unlocked, the engine waits for a mean-reversion pullback into the value area (VWAP +- 1$\sigma$).
-3.  **Trigger Phase:** Trades are executed only upon confirmation of a micro-structure breakout (Confirmed Swing High/Low) within the value zone.
+1. **Unlock:** volatility expansion aligned with higher-timeframe structure.
+2. **Zone:** pullback into VWAP value area (e.g., VWAP ± bands).
+3. **Trigger:** micro-structure confirmation (e.g., confirmed swing + break) before entry.
 
-### Logic Visualization (v1.0.5)
-*Trace of the State Machine during a typical session. Note the strict delay in Swing High (Red Triangle) confirmation, proving causal integrity.*
-
-![Strategy Logic Trace](assets/v1_0_5_strategy_logic_trace.png)
+> Meridian is the tool. Strategy 3A is the current reference implementation.
 
 ---
 
-## 3. Performance (v1.0.5 Release)
+## 3. Results & Reporting
+Meridian writes **immutable run outputs** on every execution:
 
-*Audited results derived from a 12-month evaluation period on NQ (2024-2025). The metrics below reflect the strict enforcement of causal execution protocols, volatility gating, and accurate slippage modeling.*
+- `run_meta.json` — config snapshot + seed + command argv + (optional) data SHA256 + artifact SHA256s
+- `summary.json` — hashable summary metrics
+- `signals.parquet` — (optional) signal table for debugging
+- `trades.parquet / trades.csv` — execution log with `signal_time` vs `entry_time`
+- `docs/system/STRATEGY_RESULTS.md` (generated by `scripts/make_report.py`)
 
-### Overall Performance
-| Metric | Value | Description |
-| :--- | :--- | :--- |
-| **Win Rate** | `50.7%` | Robust trend-following profile. |
-| **Profit Factor** | `1.23` | Gross Win / Gross Loss. |
-| **Sharpe Ratio** | `1.51` | Risk-adjusted return (Est. Annualized). |
-| **Max Drawdown** | `-4.89 R` | Duration: 192 Days (Honest reporting of regime shifts). |
-| **Runtime** | `13.3s` | Full 1-year event loop (Core i9 Reference). |
+Below is an example performance dashboard generated from a single backtest run.
+It is intended to demonstrate Meridian’s **artifact-backed reporting** and **diagnostic coverage** (equity in R, drawdown profile, rolling win rate, trade outcome distribution, monthly net R).
 
-### Latency & Profiling
-| Component | Duration | Description |
-| :--- | :--- | :--- |
-| **Backtest** | `13.30s` | End-to-End (Feature Gen + Event Loop) |
-| **Walk-Forward** | `15.66s` | 63/21 IS/OOS |
-| **Monte Carlo** | `0.49s` | 2,500 Iteration Block Bootstrap |
+- This figure is **generated from run artifacts** (`trades.parquet`, `summary.json`, `run_meta.json`) and is reproducible given the same inputs/config.
+- Results shown are **not a profitability claim**. They reflect the specified execution model (e.g., next-bar-open fills + slippage + fill-time risk constraints) and serve as a correctness/debugging tool.
+- The goal is to make it easy to spot modeling issues: regime dependence, drawdown persistence, skew/fat tails, and instability in rolling hit-rate.
 
-### Performance Verification
-*Analytics generated by Meridian v1.0.5.*
-
-The simulation below demonstrates the engine's ability to capture and visualize regime-dependent performance with granular transparency.
-* **Regime Sensitivity:** The **Rolling Win Rate** panel tracks consistency shifts, clearly identifying the mid-year volatility crush where trend capture became statistically difficult.
-* **Risk Architecture:** The **Drawdown Profile** (Red) visualizes the exact duration and depth of "underwater" periods, verifying that stop-loss protocols remain robust even during extended drawdowns.
-* **Statistical Edge:** The **Outcome Distribution** histogram proves the strategy's asymmetry—rigidly cutting losses at -1R while allowing fat-tail winners to expand, validating the core Event-Driven execution logic.
-
-![Performance Curve](assets/v1_0_5_performance.png)
+![Cumulative Performance](assets/v1_0_6_performance.png)
 
 ---
 
 ## 4. Data Verification
 
-To ensure simulation fidelity, the input data (Nasdaq-100 1-Minute Bars) undergoes rigorous integrity checks prior to backtesting.
-
-### A. Session Density
-*Validation of bar counts per RTH session. The target is 390 bars (09:30–15:59 ET). Consistent density confirms no missing data gaps during trading hours.*
+### A) Session Density
+RTH 1-minute sessions should contain **390 bars** (09:30–15:59 ET). This validates no missing intraday gaps.
 
 ![Session Density](assets/nq_session_density.png)
 
-### B. Volatility Regime Analysis
-*Distribution of 1-Minute True Range (volatility). The heavy right tail indicates periods of extreme expansion (News/Breakouts), which the `filters.py` module uses to gate trade entries.*
+### B) Volatility Regime
+True Range distribution identifies volatility regimes; filters gate entries during extreme conditions.
 
 ![Volatility Regime](assets/nq_volatility_regime.png)
 
-
-### Artifact Integrity
-Every run produces an immutable **Audit Trail**:
-* `run_meta.json`: Full config snapshot + Random Seed.
-* `trades.parquet`: Row-level execution log with `signal_time` vs `entry_time`.
-* `summary.json`: Hashable performance metrics.
-
+---
 
 ## 5. Repository Layout
-
-The project follows a modular package structure designed for maintainability and testing.
 
 ```text
 .
@@ -134,93 +111,155 @@ The project follows a modular package structure designed for maintainability and
 ## 6. Quick Start
 
 ### Prerequisites
-* Python 3.10+
-* Dependencies managed via `pyproject.toml` (Pandas, NumPy, PyArrow, SciPy, PyYAML)
+- Python 3.10+
+- Dependencies in `pyproject.toml`
+- Locked installs supported via `requirements.lock`
 
 ### Installation
-Clone the repository and install in editable mode. The build system will automatically resolve the best compatible versions for your OS (Linux/Windows/Mac).
 
-```bash
-# Clone repository
+```powershell
 git clone https://github.com/sukesan7/meridian.git
 cd meridian
 
-# Create virtual environment & install dependencies (Locked)
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
+
 pip install -r requirements.lock
 pip install -e .
 ```
 
-### Running a Demo (No Data Required)
-If you do not possess proprietary NQ futures data, you can verify the engine's logic by running the test suite. The tests generate **synthetic market data** on the fly to validate the execution engine, slippage models, and state machine.
+### No proprietary data? Run tests.
+The test suite generates synthetic market data to validate causality and execution correctness.
 
 ```bash
-# Run full test suite with verbose output
 pytest -v
 ```
 
 ---
 
-## 7. Usage & Workflows
+## 7. Usage
 
-Meridian utilizes a unified CLI `meridian-run` for all simulation modes.
-Reproduce the v1.0.5 audit results using the included sample configuration.
+Meridian uses a unified CLI: `meridian-run`.
 
-### Set the common variables (optional)
-```powershell
-$DATA = "data\vendor_parquet\NQ\NQ.v.0_2024-12-01_2025-11-30_RTH.parquet"
-$CFG  = "configs\base.yaml"
-$SEED = 105
+### Backtest
+
+```bash
+meridian-run backtest \
+  --config configs/base.yaml \
+  --data data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-03-30_RTH.parquet \
+  --out-dir outputs/backtest \
+  --run-id v1_0_6_backtest_baseline \
+  --seed 106
 ```
 
-### A. Standard Backtest (In-Sample)
-Executes the strategy over a fixed period and generates `trades.parquet` and `signals.parquet`.
+Optional integrity flags:
+- `--hash-data` (computes SHA256 of the data file; can be slow for large files)
 
-```powershell
-meridian-run backtest `
-  --config $CFG `
-  --data $DATA `
-  --out-dir outputs\backtest `
-  --run-id v1_0_5_backtest_baseline `
-  --seed $SEED
+### Walkforward
+
+```bash
+meridian-run walkforward \
+  --config configs/base.yaml \
+  --data data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-03-30_RTH.parquet \
+  --out-dir outputs/walkforward \
+  --run-id v1_0_6_walkforward_baseline \
+  --is-days 63 \
+  --oos-days 21 \
+  --seed 106
 ```
 
-### B. Walk-Forward Analysis (Robustness)
-Performs rolling-window validation to detect overfitting. Default: 63-day Train / 21-day Test.
+### Monte Carlo (from trades file)
 
-```powershell
-meridian-run walkforward `
-  --config $CFG `
-  --data $DATA `
-  --is-days 63 --oos-days 21 `
-  --out-dir outputs\walkforward `
-  --run-id v1_0_5_walkforward_baseline `
-  --seed $SEED
+Monte Carlo operates on an existing trades artifact:
 
-```
-
-### C. Monte Carlo (Risk Assessment)
-Applies block-bootstrap resampling to the trade distribution to estimate tail risks and drawdown probabilities.
-
-Optional:
-```powershell
-$TRADES = "outputs\backtest\v1_0_5_backtest_baseline\trades.parquet"
-```
-
-```powershell
-meridian-run monte-carlo `
-  --config $CFG `
-  --trades $TRADES `
-  --n-paths 2500 `
-  --seed $SEED `
-  --out-dir outputs\monte-carlo `
-  --run-id v1_0_5_montecarlo_baseline
+```bash
+meridian-run monte-carlo \
+  --config configs/base.yaml \
+  --trades-file outputs/backtest/v1_0_6_backtest_baseline/trades.parquet \
+  --out-dir outputs/monte-carlo \
+  --run-id v1_0_6_montecarlo_baseline \
+  --n-paths 2500 \
+  --risk-per-trade 0.01 \
+  --seed 106
 ```
 
 ---
 
-## 8. Engineering Standards & Quality Gates
+## 8. Profiling
+
+Use `scripts/profile_run.py` to profile any CLI command. **Important:** arguments after `--` are passed to `meridian-run`.
+
+### Profile backtest
+
+```bash
+python scripts/profile_run.py \
+  --out outputs/profiles/v1_0_6_baseline/backtest.prof \
+  --top 75 \
+  --sort cumtime \
+  -- \
+  backtest \
+  --config configs/base.yaml \
+  --data data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-03-30_RTH.parquet \
+  --out-dir outputs/backtest \
+  --run-id v1_0_6_profile_backtest \
+  --seed 106
+```
+
+### Profile walkforward
+
+```bash
+python scripts/profile_run.py \
+  --out outputs/profiles/v1_0_6_baseline/walkforward.prof \
+  --top 75 \
+  --sort cumtime \
+  -- \
+  walkforward \
+  --config configs/base.yaml \
+  --data data/vendor_parquet/NQ/NQ.v.0_2024-12-01_2025-03-30_RTH.parquet \
+  --out-dir outputs/walkforward \
+  --run-id v1_0_6_profile_walkforward \
+  --is-days 63 \
+  --oos-days 21 \
+  --seed 106
+```
+
+### Profile monte-carlo
+
+```bash
+python scripts/profile_run.py \
+  --out outputs/profiles/v1_0_6_baseline/monte_carlo.prof \
+  --top 75 \
+  --sort cumtime \
+  -- \
+  monte-carlo \
+  --config configs/base.yaml \
+  --trades-file outputs/backtest/v1_0_6_backtest_baseline/trades.parquet \
+  --out-dir outputs/monte-carlo \
+  --run-id v1_0_6_profile_montecarlo \
+  --n-paths 2500 \
+  --risk-per-trade 0.01 \
+  --seed 106
+```
+
+---
+
+## 9. Consolidated Report Generation
+
+After producing backtest/walkforward/monte-carlo + profiling timings, generate a publishable report:
+
+```bash
+python scripts/make_report.py \
+  --label v1_0_6_baseline \
+  --backtest outputs/backtest/v1_0_6_backtest_baseline \
+  --walkforward outputs/walkforward/v1_0_6_walkforward_baseline \
+  --monte-carlo outputs/monte-carlo/v1_0_6_montecarlo_baseline \
+  --profile outputs/profiles/v1_0_6_baseline/backtest.timing.json \
+  --profile outputs/profiles/v1_0_6_baseline/walkforward.timing.json \
+  --profile outputs/profiles/v1_0_6_baseline/monte_carlo.timing.json \
+  --out docs/system/STRATEGY_RESULTS.md
+```
+
+## 10. Engineering Standards & Quality Gates
 
 This project enforces strict software engineering standards suitable for production environments.
 
@@ -251,9 +290,7 @@ Every PR triggers `verify_determinism.py`, where CI verifies semantic determinis
       ci_artifacts/run_B/trades.parquet
 ```
 
----
-
-## 9. Data Contract
+## 11. Data Contract
 
 Meridian requires 1-minute OHLCV data normalized to the `vendor_parquet` schema.
 
@@ -267,7 +304,7 @@ The engine internally converts UTC timestamps to `America/New_York` to align wit
 
 ---
 
-## 10. Future Roadmap
+## 12. Future Roadmap
 
 * **Performance:** Migration of the core `engine.py` loop from Pandas/NumPy to **Polars** (Rust) for improved vectorization throughput and zero-copy memory management.
 * **Statistical Rigor:** Implementation of **Combinatorial Purged Cross-Validation (CPCV)** and **Deflated Sharpe Ratio (DSR)** to explicitly quantify and penalize multiple testing bias in strategy selection.
@@ -277,7 +314,6 @@ The engine internally converts UTC timestamps to `America/New_York` to align wit
 * **Strategy Expansion:** Implementation and validation of complementary strategies (**Strategy 1A**, **2A**, **4A**) to diversify the portfolio.
 
 ---
-
 ## Disclaimer
 
 **Educational & Research Use Only.**

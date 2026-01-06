@@ -1,3 +1,13 @@
+"""
+Script: Generate Tearsheet
+
+Example:
+  python scripts/generate_tearsheet.py `
+  --trades outputs/backtest/v1_0_6_backtest_baseline/trades.parquet `
+  --out assets/v1_0_6_performance.png `
+  --title "Meridian v1.0.6 | Strategy 3A (NQ RTH) | Cumulative Performance"
+"""
+
 from __future__ import annotations
 
 import argparse
