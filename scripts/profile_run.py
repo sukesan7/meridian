@@ -8,8 +8,11 @@ Description:
     of the top N most expensive function calls.
 
 Usage:
-    python scripts/profile_run.py --out outputs/profiles/bt.prof --top 50 -- \
-        backtest --config configs/base.yaml ...
+    "python scripts/profile_run.py --out outputs/profiles/backtest.prof --top 75 --sort cumtime -- \
+    backtest --config configs/base.yaml
+    --data (data).parquet
+    --out-dir outputs/backtest --run-id v1_0_6_profile_backtest
+"
 
 Arguments:
     --out  : Path to save the binary profile.
@@ -54,9 +57,23 @@ def run_profile(argv: list[str], out_prof: Path, *, top: int, sort: str) -> floa
     out_txt.write_text(s.getvalue(), encoding="utf-8")
 
     # 3) Save timing metadata
+    # pstats stores totals in .total_calls and .prim_calls
+    total_calls = int(getattr(stats, "total_calls", 0))
+    prim_calls = int(getattr(stats, "prim_calls", 0))
+
     out_meta = out_prof.with_suffix(".timing.json")
     out_meta.write_text(
-        json.dumps({"seconds": dt, "argv": argv}, indent=2),
+        json.dumps(
+            {
+                "seconds": dt,
+                "argv": argv,
+                "total_calls": total_calls,
+                "primitive_calls": prim_calls,
+                "sort": sort,
+                "top": top,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
